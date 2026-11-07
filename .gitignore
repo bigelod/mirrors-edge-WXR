@@ -67,3 +67,5 @@ desktop.ini
 src/vr_defaults.inl
 src/build_identity.inl
 src/mevr.ini
+
+Release/
