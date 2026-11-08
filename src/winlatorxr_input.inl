@@ -25,9 +25,25 @@ static bool WxrCalledFromGame(void* returnAddress)
 }
 
 // Window messages: called from WxrWindowProc before the engine's own procedure.
-static bool WxrSwallowInputMessage(UINT msg)
+//
+// The rule is now: ESC always reaches the game, and the mouse reaches it while
+// the game is in a menu/2D/loading state (g_wxrFlat) or the VR panel is up.
+// Gameplay stays gamepad-only, which is what the block was originally for.
+static bool WxrMouseAllowed()
+{
+    return g_wxrFlat || g_menuOpen;
+}
+
+static bool WxrSwallowInputMessage(UINT msg, WPARAM wp)
 {
     if (!g_wxrBlockKeyboardMouse) return false;
+    if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) {
+        if (wp == VK_ESCAPE) return false;       // never block ESC
+    }
+    if (WxrMouseAllowed()) {
+        if ((msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
+            msg == WM_INPUT || msg == WM_MOUSEHOVER || msg == WM_MOUSELEAVE) return false;
+    }
     return (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
            (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
            msg == WM_INPUT || msg == WM_MOUSEHOVER || msg == WM_MOUSELEAVE;
