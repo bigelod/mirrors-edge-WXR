@@ -1,3 +1,15 @@
+# Mirrors Edge VR for WinlatorXR
+
+Aiming for a 6DOF monocular experience of Mirrors Edge VR at a resolution of 1440x1080 without performance loss
+
+Full credit to letsgosportsteam for the original PCVR mod https://github.com/letsgosportsteam/mirrors-edge-vr-mod
+
+Credit also to SgtBilko76 for his work on a XrAPI conversion https://github.com/SgtBilko76/mirrors-edge-vr-WinlatorXR
+
+Modified with the help of OpenCode DeepSeek V4.1 Flash
+
+### Original README below:
+
 # Mirror's Edge VR
 
 A VR mod for *Mirror's Edge* (2008), with native stereo rendering, 6-DOF head

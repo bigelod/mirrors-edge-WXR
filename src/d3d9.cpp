@@ -73,6 +73,10 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <openxr/openxr.h>
+// Compile-time type declarations only. The WinlatorXR flavour has no OpenXR
+// runtime, loader, layers or platform binding; the in-process XrAPI shim
+// (winlatorxr.inl) supplies the functions the shared code calls. The desktop
+// diagnostics/reflection path is excluded below.
 #include <openxr/openxr_platform.h>
 #include <cstdio>
 #include <cstdarg>
@@ -200,6 +204,7 @@ static bool  g_wxrPacing = true;           // see WxrBeforeRealPresent (winlator
 static DWORD g_wxrPaceMarginMs = 2;
 static void WxrReleaseDeviceResources();
 extern bool g_wxrAlternateEye;
+extern bool g_wxrMono;
 static bool g_wxrBlockKeyboardMouse = true;   // WinlatorXrKeyboardMouse = off (default): gamepad only
 // Set by WxrSubmitFrame for a 2D-screen frame whose aspect differs from the pinned window: Present
 // then shows the backbuffer 1:1 centred with black bars, instead of stretched over the window.
@@ -521,10 +526,15 @@ static void WriteHeadsetCache(UINT eyeW, UINT eyeH)
 //
 // shell32 is linked, but SHGetFolderPathW is avoided deliberately: this runs from DllMain,
 // and a registry read cannot decide to load anything.
-static bool FindTdEngineIni(wchar_t* out, size_t count)
+// `requireExisting` keeps the old callers honest: a resolution write must not
+// invent a config path. The bundled-config installer passes false so a fresh
+// Wine prefix can still receive the performance file before the engine first
+// writes its own.
+static bool FindTdEngineIniCandidate(wchar_t* out, size_t count, bool requireExisting)
 {
     const wchar_t* kTail = L"\\EA Games\\Mirror's Edge\\TdGame\\Config\\TdEngine.ini";
     wchar_t docs[MAX_PATH];
+    wchar_t first[MAX_PATH] = L"";
 
     for (int source = 0; source < 3; ++source) {
         docs[0] = 0;
@@ -552,11 +562,22 @@ static bool FindTdEngineIni(wchar_t* out, size_t count)
 
         wchar_t path[MAX_PATH];
         _snwprintf_s(path, _TRUNCATE, L"%s%s", docs, kTail);
-        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) continue;
-        wcsncpy_s(out, count, path, _TRUNCATE);
+        if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
+            wcsncpy_s(out, count, path, _TRUNCATE);
+            return true;
+        }
+        if (!first[0]) wcsncpy_s(first, MAX_PATH, path, _TRUNCATE);
+    }
+    if (!requireExisting && first[0]) {
+        wcsncpy_s(out, count, first, _TRUNCATE);
         return true;
     }
     return false;
+}
+
+static bool FindTdEngineIni(wchar_t* out, size_t count)
+{
+    return FindTdEngineIniCandidate(out, count, true);
 }
 
 // Rewrite ResX / ResY in place. Returns true if the file now names this size.
@@ -664,31 +685,172 @@ static bool SyncEngineResolution(UINT w, UINT h, char* whatHappened, size_t what
 }
 
 #if MEVR_WINLATORXR
-// ---- the Quest graphics profile ----
+// ---- the Quest performance profile ----
 //
-// Box64 makes every draw call expensive and the Adreno shares its power budget with it, so the
-// engine's costliest passes are turned down before the engine reads its config. Bloom stays: the
-// game's look is built on it. Only keys already in [SystemSettings] are rewritten, and the rest
-// of the file - other sections, comments, line endings - is copied through untouched.
-// WinlatorXrGraphics = game leaves the player's own settings alone.
+// The standalone target is performance-first. The tweak-tool configuration is
+// installed from mevr-TdEngine.ini beside d3d9.dll before the engine reads its
+// config, then the critical [SystemSettings] keys are enforced in place. The
+// bundled file carries the non-SystemSettings sections (texture groups,
+// ISVHacks, audio) that a key rewrite alone cannot add; the table below is the
+// fallback and the guarantee that a stale user file cannot re-enable the
+// expensive passes. WinlatorXrGraphics = game leaves the user's file alone;
+// WinlatorXrInstallConfig = off stops the bundled-file install.
 static bool g_wxrGraphicsProfile = true;
+static bool g_wxrInstallConfig = true;
+
+static void WxrParentDirectory(wchar_t* path)
+{
+    wchar_t* slash = wcsrchr(path, L'\\');
+    if (slash) *slash = 0;
+}
+
+static bool WxrEnsureDirectoryTree(const wchar_t* path)
+{
+    wchar_t tmp[MAX_PATH];
+    if (!path || !path[0] || wcsncpy_s(tmp, MAX_PATH, path, _TRUNCATE) != 0) return false;
+    wchar_t* p = tmp;
+    if (p[0] && p[1] == L':') p += 3; else p += 1;
+    for (; *p; ++p) {
+        if (*p != L'\\') continue;
+        *p = 0;
+        if (!CreateDirectoryW(tmp, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
+        *p = L'\\';
+    }
+    return CreateDirectoryW(tmp, nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static bool WxrReadWholeFile(const wchar_t* path, std::vector<char>& out)
+{
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(h, &size) || size.QuadPart <= 0 || size.QuadPart > 4 * 1024 * 1024) {
+        CloseHandle(h);
+        return false;
+    }
+    out.resize((size_t)size.QuadPart);
+    DWORD got = 0;
+    const bool ok = ReadFile(h, out.data(), (DWORD)out.size(), &got, nullptr) && got == out.size();
+    CloseHandle(h);
+    return ok;
+}
+
+static bool WxrWriteWholeFileAtomic(const wchar_t* path, const char* data, size_t size,
+                                    char* why, size_t whyCount)
+{
+    wchar_t tmp[MAX_PATH];
+    if (_snwprintf_s(tmp, _TRUNCATE, L"%s.mevr-tmp", path) <= 0) {
+        strncpy_s(why, whyCount, "temporary path too long", _TRUNCATE);
+        return false;
+    }
+    HANDLE h = CreateFileW(tmp, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        _snprintf_s(why, whyCount, _TRUNCATE, "cannot create temporary file (error %lu)", GetLastError());
+        return false;
+    }
+    DWORD written = 0;
+    bool ok = WriteFile(h, data, (DWORD)size, &written, nullptr) && written == size;
+    if (ok) FlushFileBuffers(h);
+    CloseHandle(h);
+    if (!ok) {
+        DeleteFileW(tmp);
+        strncpy_s(why, whyCount, "cannot write temporary file", _TRUNCATE);
+        return false;
+    }
+    if (!MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const DWORD err = GetLastError();
+        DeleteFileW(tmp);
+        _snprintf_s(why, whyCount, _TRUNCATE, "cannot replace target (error %lu)", err);
+        return false;
+    }
+    return true;
+}
+
+static bool WxrFindBundledEngineIni(wchar_t* out, size_t count)
+{
+    wchar_t dll[MAX_PATH];
+    if (!g_selfModule || !GetModuleFileNameW(g_selfModule, dll, MAX_PATH)) return false;
+    wchar_t* slash = wcsrchr(dll, L'\\');
+    if (!slash) return false;
+    slash[1] = 0;
+    if (_snwprintf_s(out, count, _TRUNCATE, L"%smevr-TdEngine.ini", dll) <= 0) return false;
+    return GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES;
+}
+
+static void WxrInstallBundledConfig()
+{
+    if (!g_wxrInstallConfig) {
+        Log("[wxr] config: bundled TdEngine.ini install off (WinlatorXrInstallConfig = off)");
+        return;
+    }
+    wchar_t bundled[MAX_PATH];
+    if (!WxrFindBundledEngineIni(bundled, MAX_PATH)) {
+        Log("[wxr] config: mevr-TdEngine.ini not found beside d3d9.dll - user config left alone");
+        return;
+    }
+    std::vector<char> wanted;
+    if (!WxrReadWholeFile(bundled, wanted)) {
+        Log("[wxr] config: cannot read %S - user config left alone", bundled);
+        return;
+    }
+    wchar_t target[MAX_PATH];
+    if (!FindTdEngineIniCandidate(target, MAX_PATH, false)) {
+        Log("[wxr] config: no Documents folder found for TdEngine.ini");
+        return;
+    }
+    wchar_t dir[MAX_PATH];
+    if (wcsncpy_s(dir, MAX_PATH, target, _TRUNCATE) != 0) return;
+    WxrParentDirectory(dir);
+    if (dir[0] && !WxrEnsureDirectoryTree(dir)) {
+        Log("[wxr] config: cannot create %S (error %lu)", dir, GetLastError());
+        return;
+    }
+    std::vector<char> current;
+    if (WxrReadWholeFile(target, current) && current.size() == wanted.size() &&
+        memcmp(current.data(), wanted.data(), wanted.size()) == 0) {
+        Log("[wxr] config: bundled TdEngine.ini already current (%zu bytes)", wanted.size());
+        return;
+    }
+    wchar_t backup[MAX_PATH];
+    if (_snwprintf_s(backup, _TRUNCATE, L"%s.mevr-backup", target) > 0 &&
+        GetFileAttributesW(backup) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES) {
+        if (CopyFileW(target, backup, TRUE))
+            Log("[wxr] config: backed up the previous TdEngine.ini -> %S", backup);
+        else
+            Log("[wxr] config: backup failed (error %lu) - continuing", GetLastError());
+    }
+    char why[256] = "";
+    if (WxrWriteWholeFileAtomic(target, wanted.data(), wanted.size(), why, sizeof(why))) {
+        Log("*** [wxr] config: installed bundled TdEngine.ini (%zu bytes) -> %S", wanted.size(), target);
+    } else {
+        Log("[wxr] config: install FAILED: %s -> %S", why, target);
+    }
+}
+
 static void WxrApplyQuestGraphics()
 {
     if (!g_wxrGraphicsProfile) { Log("[wxr] graphics: the game's own settings (WinlatorXrGraphics = game)"); return; }
-    // Since 2026-10-13 only dynamic shadows are switched off (user's choice after testing: the
-    // wider cuts looked worse and gained no frame rate, the limit being the render thread's draw
-    // calls). LightEnvironmentShadows are the dynamic shadows of characters. Every other key is
-    // set back to the game's own default (BaseEngine.ini / DefaultEngine.ini), undoing the
-    // earlier Quest and "low" profiles on an existing TdEngine.ini.
+    // Performance first: no dynamic/character shadows, no DoF/AO/bloom/lens
+    // flares/fog/distortion, DetailMode 1, low anisotropy, no MSAA, 100%
+    // screen, PhysX off. These are the tweak-tool values plus the two shadow
+    // switches the previous headset test kept. Only keys already in
+    // [SystemSettings] are rewritten; the rest of the file is copied byte for
+    // byte, CRLF included.
     static const char* const kKeys[][2] = {
         { "DynamicShadows", "False" }, { "LightEnvironmentShadows", "False" },
-        { "MotionBlur", "False" }, { "DepthOfField", "True" }, { "AmbientOcclusion", "False" },
-        { "Distortion", "True" }, { "LensFlares", "True" },
-        { "DetailMode", "2" }, { "MaxShadowResolution", "512" }, { "MaxAnisotropy", "4" },
+        { "MotionBlur", "False" }, { "DepthOfField", "False" }, { "AmbientOcclusion", "False" },
+        { "Distortion", "False" }, { "LensFlares", "False" },
+        { "DetailMode", "1" }, { "MaxShadowResolution", "512" }, { "MaxAnisotropy", "0" },
         { "SkeletalMeshLODBias", "0" }, { "ParticleLODBias", "0" }, { "UseVsync", "False" },
         { "DynamicLights", "True" }, { "CompositeDynamicLights", "False" }, { "DynamicDecals", "True" },
-        { "FogVolumes", "True" }, { "DirectionalLightmaps", "True" }, { "QualityBloom", "True" },
-        { "FoliageDrawRadiusMultiplier", "1.000000" },
+        { "StaticDecals", "True" }, { "FogVolumes", "False" }, { "DirectionalLightmaps", "True" },
+        { "QualityBloom", "False" }, { "Bloom", "False" }, { "FoliageDrawRadiusMultiplier", "0.000000" },
+        { "MaxMultisamples", "1" }, { "EnableHighPolyChars", "False" }, { "TdSunHaze", "False" },
+        { "TdTonemapping", "False" }, { "TdBicubicFiltering", "False" }, { "PhysXEnhanced", "False" },
+        { "ScreenPercentage", "100.000000" },
     };
     const int kCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
     wchar_t path[MAX_PATH];
@@ -734,14 +896,14 @@ static void WxrApplyQuestGraphics()
         if (e < text.size()) out += '\n';
         i = e + 1;
     }
-    if (!changed) { Log("[wxr] graphics: Quest profile already set (%d of %d keys present)", found, kCount); return; }
+    if (!changed) { Log("[wxr] graphics: Quest performance profile already set (%d of %d keys present)", found, kCount); return; }
     HANDLE h2 = CreateFileW(path, GENERIC_WRITE, 0, nullptr, TRUNCATE_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h2 == INVALID_HANDLE_VALUE) { Log("[wxr] graphics: TdEngine.ini not writable"); return; }
     DWORD written = 0;
     const bool ok = WriteFile(h2, out.data(), (DWORD)out.size(), &written, nullptr) && written == out.size();
     CloseHandle(h2);
-    Log("*** [wxr] graphics: Quest profile %s - %d of %d keys changed ("
-        " only dynamic shadows off, the rest at the game's defaults)", ok ? "written" : "write FAILED", changed, kCount);
+    Log("*** [wxr] graphics: Quest performance profile %s - %d of %d keys changed ("
+        " shadows/DoF/AO/bloom/flares/fog/distortion off)", ok ? "written" : "write FAILED", changed, kCount);
 }
 #endif
 
@@ -809,17 +971,48 @@ static void* PatchVTable(void* obj, int index, void* repl)
 
 // ================================================================ OpenXR (rung 2)
 
-#include "xr_diagnostics.inl"
 #if MEVR_WINLATORXR
+// WinlatorXR is XrAPI, not OpenXR or OpenVR: no loader, no layers, no
+// reflection and no platform binding. InitXR only needs these two result
+// helpers; the desktop diagnostic file stays out of the Quest build.
+static const char* XrResultName(XrResult result)
+{
+    switch (result) {
+    case XR_SUCCESS:                         return "XR_SUCCESS";
+    case XR_ERROR_RUNTIME_FAILURE:           return "XR_ERROR_RUNTIME_FAILURE";
+    case XR_ERROR_FILE_ACCESS_ERROR:         return "XR_ERROR_FILE_ACCESS_ERROR";
+    case XR_ERROR_INITIALIZATION_FAILED:     return "XR_ERROR_INITIALIZATION_FAILED";
+    case XR_ERROR_API_VERSION_UNSUPPORTED:   return "XR_ERROR_API_VERSION_UNSUPPORTED";
+    case XR_ERROR_FUNCTION_UNSUPPORTED:      return "XR_ERROR_FUNCTION_UNSUPPORTED";
+    case XR_ERROR_VALIDATION_FAILURE:        return "XR_ERROR_VALIDATION_FAILURE";
+    default:                                 return "XR_RESULT";
+    }
+}
+
+static bool XrLogResult(const char* operation, XrResult result)
+{
+    Log("[xr] %s -> %s (%d)", operation, XrResultName(result), (int)result);
+    return XR_SUCCEEDED(result);
+}
+
 #include <process.h>
 #include "winlatorxr.inl"
 #include "winlatorxr_state.inl"
+#else
+#include "xr_diagnostics.inl"
 #endif
 
 static bool InitXR()
 {
+#if !MEVR_WINLATORXR
     XrStartupDiagnostics diagnostics;
     const char* exts[] = { XR_KHR_D3D11_ENABLE_EXTENSION_NAME };
+    const uint32_t extCount = 1;
+#else
+    // XrAPI has no OpenXR extensions. Keep the instance request empty.
+    const char* exts[] = { nullptr };
+    const uint32_t extCount = 0;
+#endif
 
     // VirtualDesktopXR is OpenXR 1.0 ONLY and rejects a 1.1 instance with -4. Inherited from
     // the Singularity project, where VDXR is also the only usable 32-bit runtime: Meta's own
@@ -831,8 +1024,8 @@ static bool InitXR()
         XrInstanceCreateInfo ici{ XR_TYPE_INSTANCE_CREATE_INFO };
         strcpy_s(ici.applicationInfo.applicationName, "MirrorsEdgeVR");
         ici.applicationInfo.apiVersion = v;
-        ici.enabledExtensionCount = 1;
-        ici.enabledExtensionNames  = exts;
+        ici.enabledExtensionCount = extCount;
+        ici.enabledExtensionNames  = extCount ? exts : nullptr;
         r = xrCreateInstance(&ici, &g_xrInstance);
         Log("[xr] xrCreateInstance API %u.%u.%u -> %s (%d)",
             (unsigned)XR_VERSION_MAJOR(v), (unsigned)XR_VERSION_MINOR(v), (unsigned)XR_VERSION_PATCH(v),
@@ -840,7 +1033,11 @@ static bool InitXR()
         if (XR_SUCCEEDED(r)) break;
     }
     if (XR_FAILED(r)) {
+#if MEVR_WINLATORXR
+        Log("[xr] XrAPI instance creation failed; see the result above (no OpenXR loader involved)");
+#else
         Log("[xr] instance creation failed; see the result and [xr-diag] evidence above");
+#endif
         if (r == XR_ERROR_FILE_ACCESS_ERROR)
             Log("[xr] OpenXR reported a file-access failure; this result alone does not identify the file or component");
         return false;
@@ -2751,10 +2948,12 @@ enum PkHand { PK_HAND_NONE = -1, PK_HAND_L = 0, PK_HAND_R = 1 };
 // no way to set it is worse than no flag, because the gating reads as deliberate.
 bool  g_parkourDebug = true;                // ParkourDebug in mevr.ini
 
+#if !MEVR_WINLATORXR
 static bool XrDetailedLogging()
 {
     return g_motionHandsDebug || g_armSwingDebug || g_parkourDebug;
 }
+#endif
 int   g_pkAnchor = PK_HAND_NONE;            // which hand is holding the world still
 static float g_pkAnchorLat = 0.0f;          // its lateral position when it grabbed, metres
 static float g_pkProgress = 0.0f;           // how far the body has travelled since, metres
@@ -14580,6 +14779,17 @@ static void AutoArm()
                 " most fragile right after a load)");
             return;
         }
+#if MEVR_WINLATORXR
+        if (g_wxrMono) {
+            g_stereoMode = 0;
+            g_simulStereo = false;
+            g_eyeInject = 0.0f;
+            g_renderedEye = -1;
+            g_autoDone = true;
+            Log("*** [auto] ready - mono VR, one view, no eye duplication");
+            return;
+        }
+#endif
         g_stereoMode = 1;
 #if MEVR_WINLATORXR
         g_simulStereo = !g_wxrAlternateEye;
@@ -22025,6 +22235,11 @@ bool         g_simulStereo = false;
 #if MEVR_WINLATORXR
 // AlternateEye in mevr.ini: arm alternate-eye instead of side-by-side on the headset.
 bool         g_wxrAlternateEye = true;    // headset 2026-10-13: ~40 fps against 13-15 side by side
+// WinlatorXrStereo = mono: one image to both eyes, 1x scene cost. The performance
+// default for this fork; `aer` and `sbs` restore stereo.
+bool         g_wxrMono = true;
+#else
+bool         g_wxrMono = false;           // desktop flavour never enters mono VR
 #endif          // F10 toggles; alternate-eye remains the fallback
 static bool  g_inDupDraw = false;            // re-entrancy guard
 float        g_sceneMat[16] = { 0 };         // last scene matrix seen at c0, UNMODIFIED
@@ -28286,6 +28501,15 @@ static void LoadSettingsFile()
             applied++;
             continue;
         }
+        if (_stricmp(key, "WinlatorXrInstallConfig") == 0) {
+            if (!SettingBool(val, &b)) { Log("[cfg]   WinlatorXrInstallConfig = %s  (not on/off - ignored)", val); rejected++; continue; }
+            g_wxrInstallConfig = b;
+            Log("[cfg]   WinlatorXrInstallConfig = %s  (%s)", b ? "on" : "off",
+                b ? "mevr-TdEngine.ini is copied over the Documents config before launch"
+                  : "the user's TdEngine.ini is left alone");
+            applied++;
+            continue;
+        }
         if (_stricmp(key, "WinlatorXrFastWrite") == 0) {
             if (!SettingBool(val, &b)) { Log("[cfg]   WinlatorXrFastWrite = %s  (not on/off - ignored)", val); rejected++; continue; }
             g_fastSelfWrite = b;
@@ -28398,10 +28622,35 @@ static void LoadSettingsFile()
             applied++;
             continue;
         }
+        if (_stricmp(key, "WinlatorXrStereo") == 0) {
+            if (_stricmp(val, "mono") == 0) {
+                g_wxrMono = true; g_wxrAlternateEye = false;
+            } else if (_stricmp(val, "aer") == 0) {
+                g_wxrMono = false; g_wxrAlternateEye = true;
+            } else if (_stricmp(val, "sbs") == 0) {
+                g_wxrMono = false; g_wxrAlternateEye = false;
+            } else {
+                Log("[cfg]   WinlatorXrStereo = %s  (mono, aer or sbs - ignored)", val);
+                rejected++;
+                continue;
+            }
+            Log("[cfg]   WinlatorXrStereo = %s  (%s)", g_wxrMono ? "mono" : g_wxrAlternateEye ? "aer" : "sbs",
+                g_wxrMono ? "one image to both eyes, 1x scene cost"
+                          : g_wxrAlternateEye ? "one eye per frame, full width, half the draw calls"
+                                              : "both eyes side by side every frame");
+            applied++;
+            continue;
+        }
         if (_stricmp(key, "AlternateEye") == 0) {
-            if (_stricmp(val, "on") == 0 || strcmp(val, "1") == 0) g_wxrAlternateEye = true;
-            else if (_stricmp(val, "off") == 0 || strcmp(val, "0") == 0) g_wxrAlternateEye = false;
-            else { Log("[cfg]   AlternateEye = %s  (not on/off - ignored)", val); rejected++; continue; }
+            if (_stricmp(val, "on") == 0 || strcmp(val, "1") == 0) {
+                g_wxrMono = false; g_wxrAlternateEye = true;
+            } else if (_stricmp(val, "off") == 0 || strcmp(val, "0") == 0) {
+                g_wxrMono = false; g_wxrAlternateEye = false;
+            } else {
+                Log("[cfg]   AlternateEye = %s  (not on/off - ignored)", val);
+                rejected++;
+                continue;
+            }
             Log("[cfg]   AlternateEye = %s  (WinlatorXR: %s)", g_wxrAlternateEye ? "on" : "off",
                 g_wxrAlternateEye ? "one eye per frame, full width, half the draw calls" : "both eyes side by side every frame");
             applied++;
@@ -28790,13 +29039,17 @@ static void LoadSettingsFile()
                 // AdoptSceneTarget answers by presenting mono - so a non-16:9 size here costs
                 // stereo, not just some pixels.
                 const bool wide = (resW * 9 == resH * 16);
-                Log("[cfg]   Resolution = %ux%u%s", resW, resH,
-                    wide ? "  (16:9 - the aspect the engine renders)"
-                         : "  *** NOT 16:9 - the engine will letterbox into a smaller scene"
-                           " target and stereo will drop to mono. Use width*9/16 for height.");
-                if (!wide)
-                    Log("[cfg]   Resolution: %ux%u is the 16:9 height for that width",
-                        resW, (resW * 9) / 16);
+                if (g_wxrMono) {
+                    Log("[cfg]   Resolution = %ux%u  (mono VR - any aspect)", resW, resH);
+                } else {
+                    Log("[cfg]   Resolution = %ux%u%s", resW, resH,
+                        wide ? "  (16:9 - the aspect the engine renders)"
+                             : "  *** NOT 16:9 - the engine will letterbox into a smaller scene"
+                               " target and stereo will drop to mono. Use width*9/16 for height.");
+                    if (!wide)
+                        Log("[cfg]   Resolution: %ux%u is the 16:9 height for that width",
+                            resW, (resW * 9) / 16);
+                }
                 Log("[cfg]   Resolution: set [SystemSettings] ResX/ResY in TdEngine.ini to"
                     " match, or the engine will keep asking for its own size");
                 applied++;
@@ -28858,12 +29111,17 @@ static void LoadSettings()
             " uses the game's own size, and the next one will be correct)");
         return;
     }
-    // DllMain runs this before the engine's config pass. Use full per-eye width
-    // with a 16:9 frame; the engine letterboxes other aspects into a smaller target.
-    g_forceResW = g_autoEyeW * 2;
-    g_forceResH = (g_forceResW * 9) / 16;
-    Log("[cfg]   Resolution = auto -> %ux%u  (headset last wanted %ux%u an eye)",
-        g_forceResW, g_forceResH, g_autoEyeW, g_autoEyeH);
+    // DllMain runs this before the engine's config pass. Stereo uses the full
+    // per-eye width doubled into a 16:9 frame; mono uses the screen image as-is.
+    if (g_wxrMono) {
+        g_forceResW = g_autoEyeW;
+        g_forceResH = g_autoEyeH;
+    } else {
+        g_forceResW = g_autoEyeW * 2;
+        g_forceResH = (g_forceResW * 9) / 16;
+    }
+    Log("[cfg]   Resolution = auto -> %ux%u  (headset last wanted %ux%u %s)",
+        g_forceResW, g_forceResH, g_autoEyeW, g_autoEyeH, g_wxrMono ? "for mono" : "an eye");
     char what[256] = "";
     const bool ok = SyncEngineResolution(g_forceResW, g_forceResH, what, sizeof(what));
     Log("[cfg]   Resolution: %s", what);
@@ -29014,6 +29272,15 @@ BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID)
 #if MEVR_WINLATORXR
         AddVectoredExceptionHandler(1, WxrFirstChance);
         WxrInstallInputBlock();
+        WxrInstallBundledConfig();
+        // The bundled file pins 1440x1080. If mevr.ini selected another
+        // explicit size (or Auto had a cached size), put that back after the
+        // install so the engine and the mod's forced mode agree.
+        if (g_forceResW && g_forceResH) {
+            char what[256] = "";
+            const bool resOk = SyncEngineResolution(g_forceResW, g_forceResH, what, sizeof(what));
+            Log("[wxr] config: resolution after install: %s%s", what, resOk ? "" : "  (*** mismatch)");
+        }
         WxrApplyQuestGraphics();
         WxrHookPureCall();
         LogAddressSpace("at load");

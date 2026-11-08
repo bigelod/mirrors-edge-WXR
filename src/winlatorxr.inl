@@ -521,17 +521,21 @@ WXR_API xrEnumerateViewConfigurationViews(XrInstance, XrSystemId, XrViewConfigur
     // WinlatorXR splits is the X screen the container runs at, and the game must render exactly
     // that. It is taken from Wine's desktop mode, not from Z:\tmp\xr\system: on a Quest 3 that
     // file reported 840x880 for a container set to a 16:9 screen.
-    uint32_t w = 960, h = 1080;
+    uint32_t w = 1920, h = 1080;
     DEVMODEW dm{}; dm.dmSize = sizeof(dm);
     if (EnumDisplaySettingsW(nullptr, ENUM_REGISTRY_SETTINGS, &dm) && dm.dmPelsWidth >= 1024 && dm.dmPelsHeight >= 576) {
-        w = dm.dmPelsWidth / 2; h = dm.dmPelsHeight;
+        w = dm.dmPelsWidth; h = dm.dmPelsHeight;
     } else if (wxr::g_screenW >= 1024 && wxr::g_screenH >= 576) {
-        w = (uint32_t)wxr::g_screenW / 2; h = (uint32_t)wxr::g_screenH;
+        w = (uint32_t)wxr::g_screenW; h = (uint32_t)wxr::g_screenH;
     }
-    // Alternate-eye shows the whole screen to each eye. The engine still renders 16:9 (the mod
-    // asks for twice this width, 16:9), so the width is chosen for the vertical detail: 16:9 at
-    // 80% of the screen height, stretched to the screen by the window. 1792x1624 -> 2310x1299.
-    if (g_wxrAlternateEye && h >= 576) w = (uint32_t)(h * 0.8f * 16.0f / 9.0f) / 2;
+    if (!g_wxrMono) {
+        w /= 2;                       // side-by-side eye width
+        // Alternate-eye shows the whole screen to each eye. The engine still renders 16:9 (the
+        // mod asks for twice this width, 16:9), so the width is chosen for the vertical detail:
+        // 16:9 at 80% of the screen height, stretched to the screen by the window.
+        // 1792x1624 -> 2310x1299.
+        if (g_wxrAlternateEye && h >= 576) w = (uint32_t)(h * 0.8f * 16.0f / 9.0f) / 2;
+    }
     static bool logged = false;
     if (!logged) {
         logged = true;

@@ -405,8 +405,18 @@ static void WxrUpdateFlatMode(long frame)
     const bool flat = !control || inControlRun < 36;
     if (flat != g_wxrFlat) {
         g_wxrFlat = flat;
-        Log("*** [wxr] %s%s at frame %ld", flat ? "2D screen: " : "stereo: the player is in control",
+        Log("*** [wxr] %s%s at frame %ld",
+            flat ? "2D screen: " : g_wxrMono ? "mono VR: " : "stereo: the player is in control",
             flat ? (reason ? reason : "settling after a handover") : "", frame);
+    }
+    if (g_wxrMono) {
+        // Mono VR still uses the game's single view: no eye offset, no draw
+        // duplication, but do not enter the flat 2D-screen path.
+        g_stereoMode = 0;
+        g_simulStereo = false;
+        g_eyeInject = 0.0f;
+        g_renderedEye = -1;
+        return;
     }
     if (g_wxrFlat && g_stereoMode == 1) { stereoWasOn = true; g_stereoMode = 0; g_eyeInject = 0.0f; g_renderedEye = -1; }
     else if (!g_wxrFlat && stereoWasOn) { stereoWasOn = false; g_stereoMode = 1; }
@@ -659,8 +669,12 @@ static void WxrSubmitFrame(IDirect3DDevice9* dev)
     if (dupThisFrame >= 4) monoRun = 0; else if (monoRun < 1000) ++monoRun;
     const bool frameIsStereo = monoRun < 10;
     const bool sceneFillsFrame = SceneW() == d.Width && SceneH() == d.Height;
-    int layout = 0;                                     // 0 flat, 1 side by side, 2 alternate-eye
-    if (g_stereoMode == 1 && g_viewsValid) {
+    int layout = 0;                                     // 0 flat, 1 side by side, 2 alternate-eye, 3 mono VR
+    if (g_wxrMono && !g_wxrFlat) {
+        // One image, both eyes. The game still runs its single view with head
+        // tracking; no eye offset and no duplicate draws.
+        layout = 3;
+    } else if (g_stereoMode == 1 && g_viewsValid) {
         if (g_simulStereo && frameIsStereo && sceneFillsFrame) layout = 1;
         else if (!g_simulStereo && drawnEye >= 0) layout = 2;
     }
@@ -737,6 +751,7 @@ static void WxrSubmitFrame(IDirect3DDevice9* dev)
     // ---- 4. how to show it ----
     if (layout == 1)      wxr::Send(0, 0, 1, 1, fovX, fovY);
     else if (layout == 2) wxr::Send(0, 0, 1, 2, fovX, fovY);
+    else if (layout == 3) wxr::Send(0, 0, 1, 0, fovX, fovY);   // Mono VR
     else if (roomScreen)  wxr::Send(0, 0, 1, 2, drawn.fovX, drawn.fovY);
     else                  wxr::Send(0, 0, 2, 0, 0, 0);
 
@@ -749,6 +764,7 @@ static void WxrSubmitFrame(IDirect3DDevice9* dev)
                 Log("*** [wxr] PRESENTING -> %s (change #%ld; stereoMode %d viewsValid %d dup %ld"
                     " simul %d eye %d scene %ux%u frame %ux%u, fov %.1f x %.1f, stamp %s)",
                     layout == 1 ? "side-by-side stereo" : layout == 2 ? "alternate-eye stereo"
+                                : layout == 3 ? "mono VR"
                                 : roomScreen ? "room-fixed virtual screen" : "WinlatorXR 2D screen",
                     changes, g_stereoMode, g_viewsValid ? 1 : 0, (long)dupThisFrame,
                     g_simulStereo ? 1 : 0, g_renderedEye, SceneW(), SceneH(), d.Width, d.Height,
@@ -781,7 +797,7 @@ static void WxrSubmitFrame(IDirect3DDevice9* dev)
     prevNow = now;
 
     g_viewsValid = false;
-    if (g_stereoMode == 1) AdoptLocatedViews(now);
+    if (g_stereoMode == 1 || (g_wxrMono && !g_wxrFlat)) AdoptLocatedViews(now);
 
     ApplyHeadTracking(now);
     WxrPushPose(wxr::Frame().sync);          // the pose just latched and the yaw it left behind
@@ -818,7 +834,8 @@ static void WxrSubmitFrame(IDirect3DDevice9* dev)
         ReleaseSRWLockShared(&wxr::g_lock);
         Log("[wxr] frame %ld: %.1f fps, %ld packets (%ld rejected%s%s), sync %d, %s",
             n, 1.0e9 / periodNs, packets, rejected, rejected ? ", first: " : "", rejected ? bad : "",
-            drawn.sync, layout == 1 ? "side-by-side" : layout == 2 ? "alternate-eye" : "flat");
+            drawn.sync, layout == 1 ? "side-by-side" : layout == 2 ? "alternate-eye"
+                       : layout == 3 ? "mono" : "flat");
         {
             static LARGE_INTEGER lastAt{};
             LARGE_INTEGER nowAt, fq; QueryPerformanceCounter(&nowAt); QueryPerformanceFrequency(&fq);
