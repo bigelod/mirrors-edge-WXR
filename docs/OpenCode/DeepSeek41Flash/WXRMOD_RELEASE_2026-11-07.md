@@ -75,7 +75,7 @@ Key hashes:
 
 | File | SHA-256 |
 |---|---|
-| `d3d9.dll` | `13EA706950A32D0DE3294CF455C10E85085F5A5A1CEEC11FA06ED307B160E39C` |
+| `d3d9.dll` | `D0AD5915041809485C03FB299AA3502DB231C09B05A7AAA3B1BC90E0F8F3B6D4` |
 | `mevr.ini` | `A87EB263711190BC3C9FF21A3D6CBBFDFA310E7007A7382E412665A1E2651173` |
 | `mevr-TdEngine.ini` | `A44BC437F6AF52519D0CC8DC2E294AFCB9F15892E8ECDAB33F6A435741423D47` |
 | `MirrorsEdge.exe` | `EC0907678EA3F7DDD48950C0F9346D04EF6F8A6040227C1FFCD3CBCEF9E27C33` |
@@ -96,7 +96,7 @@ Build identity: `2F60E228EC9A13870AD77F6E5C387B1B489BF542C108A0F03855B9EE2F10D72
   `VCRUNTIME140`, UCRT. The x86 VC++ 2015–2022 runtime is required.
 - `Fallback\d3d9-mt.dll` is the same source rebuilt `/O2 /MT` and imports only
   `USER32`, `ADVAPI32`, `WS2_32`, `KERNEL32`; use it if the dynamic runtime is
-  missing (`89E604D6...`).
+  missing (`89DB482A...`).
 - The desktop flavour was compile-checked (`/c`) to ensure the
   `FindTdEngineIniCandidate` refactor did not break it.
 - `tools/check-wxrmod-overlay.ps1` validates the overlay hashes, required
@@ -121,6 +121,35 @@ Build identity: `2F60E228EC9A13870AD77F6E5C387B1B489BF542C108A0F03855B9EE2F10D72
 - The approved desktop v0.2.2-alpha release is untouched; this is a separate
   local Quest candidate.
 - Game-derived files live only under gitignored `Release/`; do not commit them.
+
+## Freeze report, 2026-11-08
+
+The first device attempts (`E:/tmp/Q3Mods/MirrorsEdge/Logs/FirstAttempt`) hang
+on the intro/cutscene → tutorial transition.
+
+- The 23:27 run used PERFORMANCE (`STRONGMEM=0`) and ended at
+  `MirrorsEdge.exe+73079A` (null vtable, the known out-of-order-write symptom).
+- The 23:54 run also used PERFORMANCE and a 1280x720 container with
+  `Resolution=1440x1080`; the 2D screen was scaled 960x720 into 1280x720.
+- The latest run used STABILITY (`STRONGMEM=2`) and matched 1440x1080, and
+  still hung after the cutscene: pawn invalidated at frame 2346, camera fields
+  unreadable, a first-chance `VCRUNTIME140+ED67` (inside `memcpy`) bad read,
+  then the log stops at frame 2544 / 45.2 s.
+- The latest config install failed with error 5: the tweak tool had made
+  `TdEngine.ini` read-only, so neither the install nor the profile could write.
+  The game also cannot save settings while it is read-only.
+
+Code changes from this report: clear the read-only attribute before config
+writes; stop sending `MODE_VR 0` on shutdown; clamp `MODE_3D` to 0 for any
+`MODE_VR` other than 1 and log every UDP mode change; log a container-desktop
+vs `Resolution` mismatch.
+
+The remaining suspects, in test order: PhysX still enabled in-game; mono
+presentation (`WinlatorXrStereo=aer` is the known-good fallback); the tweak
+tool's decompressed packages; the patched exe/config-hash patch; OpenAL Soft;
+the bundled config/profile. The `memcpy` bad read at the transition makes a
+package/exe issue more likely than the mod's rendering path, but the isolation
+steps in `Release/WXRMOD/README.txt` are the test.
 
 ## Next checks
 

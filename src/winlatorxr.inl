@@ -200,6 +200,22 @@ static SOCKET Bind(u_short port)
 static void Send(float lHaptic, float rHaptic, int modeVr, int mode3d, float fovX, float fovY)
 {
     if (g_out == INVALID_SOCKET) return;
+    // MODE_3D is only meaningful with MODE_VR 1. A stray 2 (AER) in a
+    // MODE_VR 0/2 packet has frozen WinlatorXR; clamp it and log the fact.
+    if (modeVr != 1 && mode3d != 0) {
+        Log("[wxr] Send: MODE_VR %d with MODE_3D %d - forcing MODE_3D 0", modeVr, mode3d);
+        mode3d = 0;
+    }
+    if (mode3d < 0 || mode3d > 2) {
+        Log("[wxr] Send: invalid MODE_3D %d - forcing 0", mode3d);
+        mode3d = 0;
+    }
+    static int lastModeVr = -1, lastMode3d = -1;
+    if (modeVr != lastModeVr || mode3d != lastMode3d) {
+        Log("*** [wxr] UDP mode: MODE_VR %d, MODE_3D %d", modeVr, mode3d);
+        lastModeVr = modeVr;
+        lastMode3d = mode3d;
+    }
     // Locale-independent: printf would write a decimal comma under some Wine locales.
     char msg[96];
     auto fixed = [](char* at, size_t cap, float v) {
@@ -257,7 +273,11 @@ static bool Start()
 static void Stop()
 {
     if (!g_started) return;
-    Send(0, 0, 0, 0, 0, 0);                 // hand the headset back to the flat desktop
+    // Do NOT send MODE_VR 0. On the headset that transition has frozen
+    // WinlatorXR. Non-VR flat shows the window and the process exit closes the
+    // socket; the runtime does not need the 0 "stop stream" packet.
+    Send(0, 0, 2, 0, 0, 0);
+    Log("[wxr] stop: sent non-VR flat (MODE_VR 2), not MODE_VR 0");
     DeleteFileA("Z:\\tmp\\xr\\vr");
     InterlockedExchange(&g_stop, 1);
     WaitForSingleObject(g_thread, 1000);
@@ -542,6 +562,13 @@ WXR_API xrEnumerateViewConfigurationViews(XrInstance, XrSystemId, XrViewConfigur
         Log("[wxr] screen: desktop mode %lux%lu, current %dx%d, XrAPI system file %dx%d -> eye %ux%u",
             dm.dmPelsWidth, dm.dmPelsHeight, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
             wxr::g_screenW, wxr::g_screenH, w, h);
+        const UINT deskW = dm.dmPelsWidth ? dm.dmPelsWidth : (UINT)GetSystemMetrics(SM_CXSCREEN);
+        const UINT deskH = dm.dmPelsHeight ? dm.dmPelsHeight : (UINT)GetSystemMetrics(SM_CYSCREEN);
+        if (g_forceResW && g_forceResH && (deskW != g_forceResW || deskH != g_forceResH)) {
+            Log("*** [res] container desktop %ux%u does not match Resolution %ux%u -"
+                " set the WinlatorXR screen to the render size, or change Resolution",
+                deskW, deskH, g_forceResW, g_forceResH);
+        }
     }
     for (uint32_t i = 0; i < 2; ++i) {
         views[i].recommendedImageRectWidth  = views[i].maxImageRectWidth  = w;

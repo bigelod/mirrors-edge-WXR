@@ -205,6 +205,9 @@ static DWORD g_wxrPaceMarginMs = 2;
 static void WxrReleaseDeviceResources();
 extern bool g_wxrAlternateEye;
 extern bool g_wxrMono;
+// Resolution = WxH from mevr.ini; 0 = leave alone. Declared before the
+// WinlatorXR .inl includes so their startup diagnostics can read it.
+static UINT g_forceResW = 0, g_forceResH = 0;
 static bool g_wxrBlockKeyboardMouse = true;   // WinlatorXrKeyboardMouse = off (default): gamepad only
 // Set by WxrSubmitFrame for a 2D-screen frame whose aspect differs from the pinned window: Present
 // then shows the backbuffer 1:1 centred with black bars, instead of stretched over the window.
@@ -580,6 +583,23 @@ static bool FindTdEngineIni(wchar_t* out, size_t count)
     return FindTdEngineIniCandidate(out, count, true);
 }
 
+// The desktop tweak tool deliberately makes TdEngine.ini read-only so the game
+// cannot overwrite its settings. The WinlatorXR config install must clear that
+// before replacing or rewriting the file, or it fails with ERROR_ACCESS_DENIED
+// and the game may also fail when it tries to save during a level transition.
+static bool EnsureFileWritable(const wchar_t* path)
+{
+    const DWORD attrs = GetFileAttributesW(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) return false;
+    if (!(attrs & FILE_ATTRIBUTE_READONLY)) return true;
+    if (!SetFileAttributesW(path, attrs & ~FILE_ATTRIBUTE_READONLY)) {
+        Log("[cfg] could not clear read-only on %S (error %lu)", path, GetLastError());
+        return false;
+    }
+    Log("[cfg] cleared read-only on %S", path);
+    return true;
+}
+
 // Rewrite ResX / ResY in place. Returns true if the file now names this size.
 //
 // Line-anchored, and both keys occur exactly once in the file - the [SystemSettings] copies
@@ -667,6 +687,11 @@ static bool SyncEngineResolution(UINT w, UINT h, char* whatHappened, size_t what
         return true;
     }
 
+    if (!EnsureFileWritable(path)) {
+        strncpy_s(whatHappened, whatCount, "TdEngine.ini is read-only and could not be made writable",
+                  _TRUNCATE);
+        return false;
+    }
     HANDLE h2 = CreateFileW(path, GENERIC_WRITE, 0, nullptr, TRUNCATE_EXISTING,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h2 == INVALID_HANDLE_VALUE) {
@@ -759,6 +784,7 @@ static bool WxrWriteWholeFileAtomic(const wchar_t* path, const char* data, size_
         strncpy_s(why, whyCount, "cannot write temporary file", _TRUNCATE);
         return false;
     }
+    EnsureFileWritable(path);                 // the tweak tool marks it read-only
     if (!MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const DWORD err = GetLastError();
         DeleteFileW(tmp);
@@ -897,6 +923,10 @@ static void WxrApplyQuestGraphics()
         i = e + 1;
     }
     if (!changed) { Log("[wxr] graphics: Quest performance profile already set (%d of %d keys present)", found, kCount); return; }
+    if (!EnsureFileWritable(path)) {
+        Log("[wxr] graphics: TdEngine.ini is read-only and could not be made writable");
+        return;
+    }
     HANDLE h2 = CreateFileW(path, GENERIC_WRITE, 0, nullptr, TRUNCATE_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h2 == INVALID_HANDLE_VALUE) { Log("[wxr] graphics: TdEngine.ini not writable"); return; }
     DWORD written = 0;
@@ -27793,7 +27823,7 @@ static void PatchDeviceOnce(IDirect3DDevice9* dev)
 // per-eye width doubled, and the height is that width * 9/16, NOT the recommended height:
 // at 2112x2304 an eye that is 4224x2376, which keeps full horizontal parity and renders 3%
 // more vertical than the runtime asks for rather than fighting the engine's aspect.
-static UINT g_forceResW = 0, g_forceResH = 0;      // ini Resolution = WxH; 0 = leave alone
+// g_forceResW / g_forceResH are declared before the WinlatorXR includes above.
 
 typedef UINT    (STDMETHODCALLTYPE *PFN_GetAdapterModeCount)(IDirect3D9*, UINT, D3DFORMAT);
 typedef HRESULT (STDMETHODCALLTYPE *PFN_EnumAdapterModes)(IDirect3D9*, UINT, D3DFORMAT, UINT,
