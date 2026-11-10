@@ -98,7 +98,11 @@ All changes are in `src/d3d9.cpp`.
     shared-surface capture features and are forced off for WinlatorXR, so the
     game keeps its original plain D3D9 device. The menu rows are hidden in the
     WXR build.
-17. **OpenXR/OpenVR stripped from the WinlatorXR build as far as the shared
+17. **Detailed Logging defaults off:** `MotionHandsDebug`, `ArmSwingDebug` and
+    `ParkourDebug` are off in the code defaults and the shipped `mevr.ini`.
+    The Troubleshooting row can enable them for a diagnostic run; they write a
+    very large log.
+18. **OpenXR/OpenVR stripped from the WinlatorXR build as far as the shared
     code allows:** `xr_diagnostics.inl` (OpenXR loader/layer/reflection
    diagnostics) is excluded, the instance is created with zero extensions, and
    `XrDetailedLogging` is desktop-only. The remaining OpenXR headers are
@@ -138,8 +142,8 @@ Key hashes:
 
 | File | SHA-256 |
 |---|---|
-| `d3d9.dll` | `DF9A5215AE6B192376F118078ED2D31C0D794FDB13561738D7271966B64A273C` |
-| `mevr.ini` | `49E0FD66A0CB81AF123B4F35DE8DE40F6EC1013CCCA74DC1C55896A14AF048B1` |
+| `d3d9.dll` | `0F9186B5724733041F7348543D70AA7148369C4B6396DC6AE778CDD70AD9B2FC` |
+| `mevr.ini` | `555462EB99D8A03D187C4D1AB7FD3289985F822CFF87A046600C25DEA158F99D` |
 | `mevr-TdEngine.ini` | `3D09EE770B32728C4A4E3B848AF032AAAC685A15149218752DA0E5F02E3CF419` |
 | `MirrorsEdge.exe` | `EC0907678EA3F7DDD48950C0F9346D04EF6F8A6040227C1FFCD3CBCEF9E27C33` |
 | `DefaultHudEffects.ini` | `40A4E4E7A04865BC12E46CF5B082F09D7E884D88B1236542F2993F495CB9917B` |
@@ -147,7 +151,7 @@ Key hashes:
 | `TdGame.u` | `AF4A5ADA7972E949DF1F0C6588617143C86B8EF027F7FBC206ECFF1AD97B0524` |
 | `Ts_LOC_int.upk` | `3448981058D0469E9BC5BA1AF475B810F9A4A0AC3424617DDF77B2A71DB5145B` |
 
-Build identity: `88A6F0743C8F44F800F495AC74456292E97EB37A1650EDC6313FC956FE030F37`.
+Build identity: `924C4162D4996E56FF4712645DEACC2C2338C8DE63038C6DE529070AF11C8F87`.
 
 ## Build and verification
 
@@ -158,7 +162,7 @@ Build identity: `88A6F0743C8F44F800F495AC74456292E97EB37A1650EDC6313FC956FE030F3
   `VCRUNTIME140`, UCRT. The x86 VC++ 2015–2022 runtime is required.
 - `Fallback\d3d9-mt.dll` is the same source rebuilt `/O2 /MT` and imports only
   `USER32`, `ADVAPI32`, `WS2_32`, `KERNEL32`; use it if the dynamic runtime is
-  missing (`D3742FCC...`).
+  missing (`B1CB33BF...`).
 - The desktop flavour was compile-checked (`/c`) to ensure the
   `FindTdEngineIniCandidate` refactor did not break it.
 - `tools/check-wxrmod-overlay.ps1` validates the overlay hashes, required
