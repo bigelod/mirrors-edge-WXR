@@ -9,6 +9,10 @@ to UDP 127.0.0.1:7872 at the headset rate while printing every mode change the m
   tools/fake-xrapi.py                     Quest 3-like FOV, 2048x1152 virtual screen
   tools/fake-xrapi.py --screen 1920x1080 --seconds 600
   tools/fake-xrapi.py --press 30:RA       hold A from 30 s to 30.5 s (button names below)
+  tools/fake-xrapi.py --dir D:\\xrtemp --screen 1440x1080 --press 5:RA
+
+On Windows the default directory is Z:\\tmp\\xr when Z:\\tmp exists, otherwise
+D:\\xrtemp. The mod follows the same rule.
 
 While it runs, writing button names to <dir>/press (e.g. `echo RA > /tmp/xr/press`) holds each
 for 0.3 s (or `LY:1.3` for 1.3 s), one after another; `LStickUp` and friends also move that
@@ -37,8 +41,14 @@ def quat_yaw_pitch(yaw, pitch):
 
 
 def main():
+    # Wine maps Z:\ to /, so Linux uses /tmp/xr. Native Windows follows the
+    # HWXR/Shogo convention: Z:\tmp\xr in a container, D:\xrtemp on a PC.
+    if os.name == 'nt':
+        default_dir = r'Z:\tmp\xr' if os.path.isdir(r'Z:\tmp') else r'D:\xrtemp'
+    else:
+        default_dir = '/tmp/xr'
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--dir', default='/tmp/xr')
+    ap.add_argument('--dir', default=default_dir)
     ap.add_argument('--screen', default='2048x1152')
     ap.add_argument('--fov', default='108.9x103.4', help='per-eye FOV in degrees, as a Quest 3 reports')
     ap.add_argument('--ipd', type=float, default=0.063)

@@ -1279,7 +1279,7 @@ static bool VrPollStandardController(MEVR_XINPUT_STATE* state);
 static void VrSelectController(bool connected,const MEVR_XINPUT_STATE& pad,bool questActivity);
 static void VrPublishStandardController(MEVR_XINPUT_STATE state,bool shortY);
 static bool        g_motionHands = true;            // controller-driven hands; can be disabled in VR settings
-static bool        g_motionHandsDebug = true;       // Detailed Logging default
+static bool        g_motionHandsDebug = false;      // Detailed Logging default (off)
 static bool        g_pistolHands = true;            // requires MotionHands and validated combat hooks
 static bool        g_pickupDebug = false;           // INI-only diagnostics; blue pickup indicator is independent
 static bool        g_motionPunch = true;            // requires MotionHands + GripToGrip
@@ -1852,8 +1852,8 @@ static void XrInitActions()
 //
 // Nothing here writes to the pad, so a build carrying it is safe to play normally.
 
-static bool  g_armSwing = true;             // ArmSwing;      NUMPAD * toggles
-static bool  g_armSwingDebug = true;        // ArmSwingDebug; the per-second metric report
+static bool  g_armSwing = false;            // ArmSwing;      NUMPAD * toggles
+static bool  g_armSwingDebug = false;       // ArmSwingDebug; per-second metric report (off)
 
 // One physical constant, shared by the discontinuity guard below and by UpdateSixDof, which
 // learnt it the hard way: OpenXR was measured moving the head 1.31 m between adjacent 120 Hz
@@ -2976,7 +2976,7 @@ enum PkHand { PK_HAND_NONE = -1, PK_HAND_L = 0, PK_HAND_R = 1 };
 // gated behind it was unreachable code. It accumulated four of them: the dense per-frame corner
 // trace, the grab-offset watcher, the pkend line and the CanShimmy comparison. A debug flag with
 // no way to set it is worse than no flag, because the gating reads as deliberate.
-bool  g_parkourDebug = true;                // ParkourDebug in mevr.ini
+bool  g_parkourDebug = false;               // ParkourDebug in mevr.ini (off)
 
 #if !MEVR_WINLATORXR
 static bool XrDetailedLogging()
@@ -9480,10 +9480,27 @@ bool                     g_yawLagFix  = true;    // NUMPAD6
 // not lag. See the correction for why telling them apart matters.
 float                    g_writtenYawAccum = 0.0f;
 bool                     g_rollEnabled = true;   // HOME toggles
-int                      g_rollSign = 1;         // END flips
+// Head roll injection: +1 / -1 are the two injection signs, 0 disables the
+// injection entirely so WinlatorXR's own handling can be observed. Both signed
+// values were reported wrong on the headset, so the test default is OFF; the VR
+// menu's HEAD ROLL row cycles NORMAL / INVERTED / OFF live. END still flips the
+// sign on a keyboard.
+int                      g_rollSign = 0;
 static float             g_lastLoggedFovX = -1.0f;
 float                    g_targetHalfFovX = 0.0f;   // forced frustum, radians
 float                    g_targetHalfFovY = 0.0f;
+// WinlatorXrFov / WinlatorXrFovV: horizontal and vertical FOV in degrees,
+// used both to render the scene and to tell WinlatorXR how to map the eye.
+// 0 means auto: horizontal falls back to the headset's native FOV, vertical
+// falls back to the value implied by the horizontal and the render aspect.
+// The headset measured ~108.9 x 103.4; the game's own view is ~90, so 90
+// horizontal is the shipped default and cuts the surplus the player never sees.
+float                    g_wxrFov  = 0.0f;   // auto: headset native horizontal
+float                    g_wxrFovV = 0.0f;   // auto: derived vertical
+// GameFov: the engine's own horizontal FOV, used only for CPU culling while
+// the projection is forced. 0 = automatic (widest axis plus margin). Exposed
+// separately so a test can see what the engine FOV actually changes.
+float                    g_gameFov = 105.0f;   // engine culling FOV; 0 = auto
 bool                     g_fovForce = true;         // F8 toggles
 static bool              g_fovLogged = false;
 static long              g_fovWrites = 0;
@@ -9624,6 +9641,29 @@ static void AdoptLocatedViews(XrTime displayTime)
                 float right = 0.0f;
                 for (int e = 0; e < 2; ++e) if (g_views[e].fov.angleRight > right) right = g_views[e].fov.angleRight;
                 if (right > 0.1f) g_targetHalfFovX = right;
+            }
+            // FOV HMD H / FOV HMD V are independent during testing. Each one set
+            // explicitly is used verbatim; 0/auto keeps the headset's value. If only
+            // one axis is explicit, the other is derived from the render aspect so
+            // there is still a square-pixel frustum to look at.
+            const float degToRad = 3.14159265358979323846f / 180.0f;
+            const bool explicitH = g_wxrFov > 1.0f;
+            const bool explicitV = g_wxrFovV > 1.0f;
+            if (explicitH) g_targetHalfFovX = 0.5f * g_wxrFov * degToRad;
+            if (explicitV) g_targetHalfFovY = 0.5f * g_wxrFovV * degToRad;
+            if (explicitH && !explicitV)
+                g_targetHalfFovY = atanf(tanf(g_targetHalfFovX) / aspect);
+            else if (explicitV && !explicitH)
+                g_targetHalfFovX = atanf(tanf(g_targetHalfFovY) * aspect);
+            {
+                static float loggedH = -1.0f, loggedV = -1.0f;
+                if (loggedH != g_wxrFov || loggedV != g_wxrFovV) {
+                    loggedH = g_wxrFov; loggedV = g_wxrFovV;
+                    Log("[fov] HMD H %.0f%s, HMD V %.0f%s -> targeting %.1f x %.1f",
+                        g_wxrFov, explicitH ? "" : " (auto)",
+                        g_wxrFovV, explicitV ? "" : " (auto)",
+                        g_targetHalfFovX * 114.5916f, g_targetHalfFovY * 114.5916f);
+                }
             }
 #endif
             if (!g_fovLogged) {
@@ -10801,7 +10841,7 @@ int       g_offMaxSmoothFps = -1;
 // Not a permanent verdict. The game reaches 95-119 in lighter scenes, so a 90 Hz headset mode
 // would be 1:1 almost everywhere and better than either. NUMPAD7 cycles for exactly that kind of
 // test.
-float     g_fpsCap          = 72.0f;    // NUMPAD7 cycles
+float     g_fpsCap          = 60.0f;    // NUMPAD7 cycles; 60 default for the Quest
 static int LookupProp(const char* className, const char* propName, bool verbose);
 
 // ---- the half-res fallback: the engine's own "too slow" machinery ----
@@ -21208,7 +21248,7 @@ static bool GetRenderedHeadFrame(RenderedHeadFrame* out)
     // Head roll never reaches PlayerCameraRotation: UE3 zeros controller roll and the mod adds
     // it in the projection path. Put the same roll into the logical head frame used by hands,
     // otherwise a stationary controller would orbit when the player tilted their head.
-    if (g_rollEnabled && fabsf(g_headRoll) > 1e-5f) {
+    if (g_rollEnabled && g_rollSign != 0 && fabsf(g_headRoll) > 1e-5f) {
         const float th = g_headRoll * (float)g_rollSign;
         const float ch = cosf(th), sh = sinf(th);
         const MEVR_Vec3 oldRight = out->right;
@@ -21357,10 +21397,19 @@ static bool SampleScriptedHeadAngles(bool requested)
     static float entryYaw=0,entryPitch=0;
     float hy=0,hp=0;
     if(requested&&GetHeadYawRaw(g_predTime+g_predPeriod,&hy)&&GetHeadPitchRaw(g_predTime+g_predPeriod,&hp)){
-        if(!g_cinematicLook){entryYaw=hy;entryPitch=hp;Log("[head] scripted render head look enabled at frame %ld",g_frames);}
-        g_cinematicYaw=hy-entryYaw;
+        if(!g_cinematicLook){entryYaw=hy;entryPitch=hp;
+            Log("[head] scripted render head look enabled at frame %ld (yaw sign %+d, pitch sign %+d)",
+                g_frames,g_yawSign,-g_pitchSign);}
+        // Same handedness as ordinary head tracking. The raw yaw delta is in the runtime's
+        // convention; the normal path multiplies it by g_yawSign, and this one used to skip
+        // that, so a cutscene turned the view the opposite way to gameplay. Pitch already
+        // applied g_pitchSign below; yaw must do the same.
+        g_cinematicYaw=(hy-entryYaw)*(float)g_yawSign;
         while(g_cinematicYaw>3.14159265f)g_cinematicYaw-=6.28318531f;
         while(g_cinematicYaw< -3.14159265f)g_cinematicYaw+=6.28318531f;
+        // Headset test 2026-11-09: the negative form was inverted in cutscenes while
+        // gameplay pitch was correct, so the cinematic overlay uses the same sign as the
+        // controller-pitch write. F4 still flips both together.
         g_cinematicPitch=(hp-entryPitch)*(float)g_pitchSign;
         g_cinematicLook=true;
         return true;
@@ -23648,7 +23697,7 @@ static void ApplyYawFix(float* m, bool rowStorage)
 
 static void ApplyRoll(float* m, bool rowStorage)
 {
-    if (!g_rollEnabled || fabsf(g_headRoll) < 1e-4f) return;
+    if (!g_rollEnabled || g_rollSign == 0 || fabsf(g_headRoll) < 1e-4f) return;
     if (g_targetHalfFovX <= 0.0f || g_targetHalfFovY <= 0.0f) return;
 
     const float tanX = tanf(g_targetHalfFovX), tanY = tanf(g_targetHalfFovY);
@@ -25840,6 +25889,8 @@ static long  g_gateSamples = 0;
 static long  g_gateReads[kGateMax] = {};
 static long  g_gateSet[kGateMax]   = {};       // samples in which the flag read non-zero
 static uint32_t g_gateLast[kGateMax] = {};
+static uint32_t g_gatePrev[kGateMax] = {};
+static bool  g_gatePrevValid[kGateMax] = {};
 static float g_inputSizePeak = 0.0f;
 
 static bool ReadFlag(uintptr_t obj, const FlagRef& f, uint32_t* out)
@@ -25901,6 +25952,18 @@ static void ProbeInputGates()
         g_gateReads[i]++;
         g_gateLast[i] = v;
         if (v) g_gateSet[i]++;
+        // The movement gate itself, on change: "set 900/900" says it is stuck but not when
+        // it became stuck, and the foreground/active pair at that instant says whether the
+        // window lost focus (the headset has only one window, so it should never).
+        if (_stricmp(g_gates[i].name, "IgnoreMoveInput") == 0 ||
+            _stricmp(g_gates[i].name, "bIgnoreMoveInput") == 0) {
+            if (g_gatePrevValid[i] && v != g_gatePrev[i])
+                Log("[input] %s %u -> %u  (foreground %p, sample %ld)",
+                    g_gates[i].name, g_gatePrev[i], v,
+                    (void*)GetForegroundWindow(), g_gateSamples);
+            g_gatePrev[i] = v;
+            g_gatePrevValid[i] = true;
+        }
         if (v && (_stricmp(g_gates[i].name, "IgnoreMoveInput") == 0 ||
                   _stricmp(g_gates[i].name, "bIgnoreMoveInput") == 0 ||
                   _stricmp(g_gates[i].name, "bCinematicMode") == 0 ||
@@ -25936,6 +25999,8 @@ static void ReportInputGates()
     if (g_offInputSize >= 0)
         Log("[input]   InputSize peaked %.2f this window  <- the stick magnitude the GAME computed."
             " Zero while the player is pushing means the pad never reached it.", g_inputSizePeak);
+    Log("[input]   foreground window %p  <- the focus the game sees",
+        (void*)GetForegroundWindow());
 
     g_gateSamples = 0;
     g_inputSizePeak = 0.0f;
@@ -26405,7 +26470,8 @@ static void DrawOverlay(IDirect3DDevice9* dev)
                 g_offName >= 0 ? "OK" : "NO", g_offPropOff >= 0 ? "OK" : "NO");
     OverlayRow(lines, &nl, "HEAD %s Y%+d P%+d  ROLL %s %+d DEG",
                 g_headTracking ? "ON" : "OFF", g_yawSign, g_pitchSign,
-                g_rollEnabled ? "ON" : "OFF", (int)(g_headRoll * g_rollSign * 57.2958f));
+                (g_rollEnabled && g_rollSign != 0) ? "ON" : "OFF",
+                (int)(g_headRoll * g_rollSign * 57.2958f));
     if (g_vmReg >= 0)
         OverlayRow(lines, &nl, "VM C%d %s MODE %d",
                     g_vmReg, g_vmRow ? "ROW" : "COL", g_vmMode);
@@ -27209,7 +27275,20 @@ static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT*
             const float needVert = tanf(g_targetHalfFovY) * aspectFull;  // to cover our vertical
             const float needHorz = tanf(g_targetHalfFovX);               // to cover our horizontal
             const float t = ((needVert > needHorz) ? needVert : needHorz) * 1.15f;
-            const float want = atanf(t) * 2.0f * 57.29578f;
+            const float autoWant = atanf(t) * 2.0f * 57.29578f;
+            // FOV GAME is independent: when set it is written verbatim to
+            // DesiredFOV/DefaultFOV/FOVAngle, so its real effect on culling and the
+            // picture can be observed instead of inferred. 0/auto keeps the old
+            // widest-axis-plus-margin calculation.
+            const float want = (g_gameFov > 1.0f) ? g_gameFov : autoWant;
+            {
+                static float loggedGame = -1.0f;
+                if (loggedGame != g_gameFov) {
+                    loggedGame = g_gameFov;
+                    Log("[fov] GameFov = %.0f%s (auto would be %.1f) - engine culling",
+                        g_gameFov, g_gameFov > 1.0f ? "" : " (auto)", autoWant);
+                }
+            }
             // The genuine engine value, captured before the first force so standdown can give
             // it back. Only a reading far from our own forced constant qualifies - after a
             // standdown restore the next capture re-reads the same genuine value, and a
@@ -27243,10 +27322,10 @@ static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT*
                 put(g_offDefaultFOV);
                 put(g_offFOVAngle);
                 if (++g_fovWrites == 1 || (g_fovWrites % 600) == 0)
-                    Log("[fov] culling FOV write #%ld: engine had %.1f, asked for %.1f -> culls"
+                    Log("[fov] culling FOV write #%ld: engine had %.1f, asked for %.1f%s -> culls"
                         " %.1f vertical at %.2f aspect (we render %.1f x %.1f)"
                         "  [DesiredFOV %+d DefaultFOV %+d]",
-                        g_fovWrites, cur, want,
+                        g_fovWrites, cur, want, g_gameFov > 1.0f ? " (GameFov)" : "",
                         atanf(t / aspectFull) * 114.5916f, aspectFull,
                         g_targetHalfFovX * 114.5916f, g_targetHalfFovY * 114.5916f,
                         g_offDesiredFOV, g_offDefaultFOV);
@@ -29025,6 +29104,16 @@ static void LoadSettingsFile()
                     b ? "  (tilt your head to counter on a narrow beam)" : "");
                 applied++;
             } else { Log("[cfg]   BalanceHeadRoll '%s' is not a boolean - ignored", val); rejected++; }
+        } else if (_stricmp(key, "HeadRollSign") == 0) {
+            // +1 / -1 select the injection sign; 0 disables the injection so the
+            // headset runtime's own roll handling can be observed. The VR menu's
+            // HEAD ROLL row changes this live.
+            const int rs = atoi(val);
+            if (rs == 1 || rs == -1 || rs == 0) {
+                g_rollSign = rs;
+                Log("[cfg]   HeadRollSign = %+d%s", rs, rs == 0 ? "  (injection off)" : "");
+                applied++;
+            } else { Log("[cfg]   HeadRollSign '%s' must be 1, -1 or 0 - ignored", val); rejected++; }
         } else if (_stricmp(key, "D3D9Ex") == 0) {
             // ⚠️ Not a hotkey, and cannot be. A device's TYPE is fixed when it is created, so
             // switching it later would mean destroying every resource in the game. This is the
@@ -29127,6 +29216,14 @@ static void LoadSettings()
     g_forceResW = g_forceResH = g_autoEyeW = g_autoEyeH = 0;
     LoadSettingsFile();
 #if MEVR_WINLATORXR
+    // WinlatorXR presents the game's own backbuffer/window. There is no PCVR
+    // shared-surface capture here, so keep the game's original plain D3D9 device
+    // and ignore the desktop capture switches entirely.
+    g_wantEx = false;
+    g_fastCapture = false;
+    Log("[cfg]   D3D9Ex/FastCapture: PCVR capture path, forced off for WinlatorXR");
+#endif
+#if MEVR_WINLATORXR
     if (!g_resAuto && g_forceResW && g_forceResH) {
         char what[256] = "";
         const bool ok = SyncEngineResolution(g_forceResW, g_forceResH, what, sizeof(what));
@@ -29135,7 +29232,21 @@ static void LoadSettings()
     }
 #endif
     if (!g_resAuto) return;
-    if (!ReadHeadsetCache(&g_autoEyeW, &g_autoEyeH)) {
+    bool haveAuto = false;
+#if MEVR_WINLATORXR
+    // Mono on the headset: the WinlatorXR container desktop IS the frame. Query it
+    // directly so auto reaches the maximum size on the first launch instead of
+    // spending one launch learning it. Stereo still uses the cached per-eye size.
+    if (g_wxrMono) {
+        DEVMODEW dm{}; dm.dmSize = sizeof(dm);
+        if (EnumDisplaySettingsW(nullptr, ENUM_REGISTRY_SETTINGS, &dm) &&
+            dm.dmPelsWidth >= 1024 && dm.dmPelsHeight >= 576) {
+            g_autoEyeW = dm.dmPelsWidth; g_autoEyeH = dm.dmPelsHeight;
+            haveAuto = true;
+        }
+    }
+#endif
+    if (!haveAuto && !ReadHeadsetCache(&g_autoEyeW, &g_autoEyeH)) {
         g_forceResW = g_forceResH = 0;
         Log("[cfg]   Resolution = auto  (no headset size recorded yet - this run"
             " uses the game's own size, and the next one will be correct)");

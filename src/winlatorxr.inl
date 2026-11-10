@@ -34,8 +34,52 @@
 namespace wxr {
 
 static const u_short kPortIn = 7872, kPortInFallback = 7873, kPortOut = 7278;
-static const char* const kDir        = "Z:\\tmp\\xr";
-static const char* const kSystemFile = "Z:\\tmp\\xr\\system";
+// WinlatorXR's handshake directory, with the HWXR/Shogo desktop fallback.
+// Z:\tmp\xr is the container path; D:\xrtemp is used when Z: does not exist,
+// so the XR UDP Tester can drive the same binary on a PC.
+static char g_xrDir[MAX_PATH] = "Z:\\tmp\\xr";
+static char g_xrSystem[MAX_PATH] = "Z:\\tmp\\xr\\system";
+// True when Z:\tmp exists, i.e. the game is running inside WinlatorXR rather than
+// in the D:\xrtemp PC-test fallback. The window-focus policy only differs there.
+static bool g_container = false;
+
+static void SetXrDirectory(const char* dir)
+{
+    strncpy_s(g_xrDir, MAX_PATH, dir, _TRUNCATE);
+    _snprintf_s(g_xrSystem, MAX_PATH, _TRUNCATE, "%s\\system", g_xrDir);
+}
+
+static bool DirectoryExists(const char* path)
+{
+    char pattern[MAX_PATH];
+    if (_snprintf_s(pattern, MAX_PATH, _TRUNCATE, "%s\\*", path) <= 0) return false;
+    WIN32_FIND_DATAA fd{};
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    FindClose(h);
+    return true;
+}
+
+static bool EnsureDirectory(const char* path)
+{
+    if (CreateDirectoryA(path, nullptr)) return true;
+    return GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static void ChooseXrDirectory()
+{
+    // If Z:\tmp exists we are in a WinlatorXR container; otherwise this is a
+    // PC test and the HWXR/Shogo D:\xrtemp fallback applies. Do not use
+    // GetFileAttributes on Z:\ - Wine can fail that probe.
+    if (DirectoryExists("Z:\\tmp") && EnsureDirectory("Z:\\tmp\\xr")) {
+        SetXrDirectory("Z:\\tmp\\xr");
+        g_container = true;
+        return;
+    }
+    EnsureDirectory("D:\\xrtemp");
+    SetXrDirectory("D:\\xrtemp");
+    g_container = false;
+}
 
 // Field order of the T/F token, exactly as transmitted.
 enum Button {
@@ -164,7 +208,7 @@ static bool WriteFileText(const char* path, const char* text)
 static void ReadSystemFile()
 {
     FILE* f = nullptr;
-    if (fopen_s(&f, kSystemFile, "rb") || !f) return;
+    if (fopen_s(&f, g_xrSystem, "rb") || !f) return;
     char line[160]; int row = 0; char manufacturer[48] = "";
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
@@ -179,8 +223,12 @@ static void ReadSystemFile()
 
 static bool Present()
 {
-    const DWORD a = GetFileAttributesA(kSystemFile);
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+    // fopen, not GetFileAttributes: the same call that reads the file, and it
+    // is the one Wine's filesystem mapping is known to satisfy.
+    FILE* f = nullptr;
+    if (fopen_s(&f, g_xrSystem, "rb") != 0 || !f) return false;
+    fclose(f);
+    return true;
 }
 
 static SOCKET Bind(u_short port)
@@ -237,12 +285,19 @@ static void Send(float lHaptic, float rHaptic, int modeVr, int mode3d, float fov
 static bool Start()
 {
     if (g_started) return true;
-    if (!Present()) {
-        Log("[wxr] %s not found - not running inside a WinlatorXR container with the XR API enabled",
-            kSystemFile);
-        return false;
+    ChooseXrDirectory();
+    Log("[wxr] XrAPI directory: %s%s", g_xrDir,
+        _stricmp(g_xrDir, "Z:\\tmp\\xr") ? " (desktop fallback)" : "");
+    if (Present()) {
+        ReadSystemFile();
+    } else {
+        // The XR UDP Tester (and a first-run container without the marker) may
+        // not have written system yet. Starting anyway lets the UDP packets
+        // drive the pad; the screen size falls back to the desktop mode.
+        Log("[wxr] %s not found - starting anyway; use the XR UDP Tester or"
+            " enable the XR API in the container", g_xrSystem);
+        strcpy_s(g_product, "XR UDP Tester");
     }
-    ReadSystemFile();
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { Log("[wxr] WSAStartup failed"); return false; }
     g_in = Bind(kPortIn);
@@ -254,10 +309,12 @@ static bool Start()
     }
     char version[16] = "0.5";
     if (const char* v = getenv("MEVR_WINLATORXR_API_VERSION")) strncpy_s(version, v, _TRUNCATE);
-    CreateDirectoryA("Z:\\tmp", nullptr);
-    CreateDirectoryA(kDir, nullptr);
-    const bool wroteVersion = WriteFileText("Z:\\tmp\\xr\\version", version);
-    const bool wroteVr      = WriteFileText("Z:\\tmp\\xr\\vr", "VR");
+    CreateDirectoryA(g_xrDir, nullptr);
+    char versionPath[MAX_PATH], vrPath[MAX_PATH];
+    _snprintf_s(versionPath, MAX_PATH, _TRUNCATE, "%s\\version", g_xrDir);
+    _snprintf_s(vrPath, MAX_PATH, _TRUNCATE, "%s\\vr", g_xrDir);
+    const bool wroteVersion = WriteFileText(versionPath, version);
+    const bool wroteVr      = WriteFileText(vrPath, "VR");
     g_arrived = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     g_thread = (HANDLE)_beginthreadex(nullptr, 0, ReceiveThread, nullptr, 0, nullptr);
     if (!g_thread) { Log("[wxr] receive thread failed to start"); return false; }
@@ -278,7 +335,9 @@ static void Stop()
     // socket; the runtime does not need the 0 "stop stream" packet.
     Send(0, 0, 2, 0, 0, 0);
     Log("[wxr] stop: sent non-VR flat (MODE_VR 2), not MODE_VR 0");
-    DeleteFileA("Z:\\tmp\\xr\\vr");
+    char vrPath[MAX_PATH];
+    if (_snprintf_s(vrPath, MAX_PATH, _TRUNCATE, "%s\\vr", g_xrDir) > 0)
+        DeleteFileA(vrPath);
     InterlockedExchange(&g_stop, 1);
     WaitForSingleObject(g_thread, 1000);
     g_started = false;

@@ -44,7 +44,39 @@ static void WxrReleaseDeviceResources()
 static HWND    g_wxrWindow = nullptr;
 static WNDPROC g_wxrPrevProc = nullptr;
 static bool    g_wxrWindowUnicode = false;
-static const UINT kWxrPinMessage = WM_APP + 0x4D45;
+static const UINT kWxrPinMessage   = WM_APP + 0x4D45;
+static const UINT kWxrFocusMessage = WM_APP + 0x4D46;
+static long    g_wxrFocusSwallowed = 0;
+static long    g_wxrFocusRestored  = 0;
+
+// On the headset, this is the only window: there is nowhere for focus to go.
+// UE3 treats WM_ACTIVATEAPP(FALSE), WM_ACTIVATE(WA_INACTIVE) and WM_KILLFOCUS as
+// "the app lost focus" and responds the PCVR way - music/audio pauses and
+// bIgnoreMoveInput is set, so the left stick stops moving the player. Suppress
+// those messages so the engine never sees the loss. Activation messages are
+// passed through normally, so a genuine regain still reaches it.
+static bool WxrFocusLossMessage(UINT msg, WPARAM wp)
+{
+    switch (msg) {
+        case WM_KILLFOCUS:  return true;
+        case WM_ACTIVATE:   return LOWORD(wp) == WA_INACTIVE;
+        case WM_ACTIVATEAPP:return wp == FALSE;
+        case WM_NCACTIVATE: return wp == FALSE;
+        default:            return false;
+    }
+}
+
+static void WxrLogFocusLoss(UINT msg, WPARAM wp)
+{
+    if (g_wxrFocusSwallowed < 8 || (g_wxrFocusSwallowed % 100) == 0) {
+        const char* name = msg == WM_KILLFOCUS   ? "WM_KILLFOCUS"
+                         : msg == WM_ACTIVATE    ? "WM_ACTIVATE(WA_INACTIVE)"
+                         : msg == WM_ACTIVATEAPP ? "WM_ACTIVATEAPP(FALSE)"
+                         : msg == WM_NCACTIVATE  ? "WM_NCACTIVATE(FALSE)" : "focus loss";
+        Log("[wxr] focus: swallowed %s #%ld (wp=%lu) - the game stays focused",
+            name, g_wxrFocusSwallowed, (unsigned long)wp);
+    }
+}
 
 static bool WxrWindowPlaced(HWND w)
 {
@@ -55,9 +87,46 @@ static bool WxrWindowPlaced(HWND w)
            !(GetWindowLongPtrA(w, GWL_STYLE) & (WS_CAPTION | WS_THICKFRAME));
 }
 
+// True when the user's focus is where the headset needs it: another window is not the
+// foreground one, and this window's own thread has it active or focused. GetFocus and
+// GetActiveWindow answer for the CALLING thread, so ask the window's thread instead.
+static bool WxrFocusSatisfied(HWND w)
+{
+    const HWND fg = GetForegroundWindow();
+    if (fg && fg != w) return false;
+    GUITHREADINFO gti{ sizeof(GUITHREADINFO) };
+    const DWORD tid = GetWindowThreadProcessId(w, nullptr);
+    if (!tid || !GetGUIThreadInfo(tid, &gti)) return true;   // cannot tell; leave it alone
+    // Active, or a child of ours is - do not pull focus away from the game's own child
+    // window, which would break its keyboard input. Focus alone is not the test for the
+    // same reason: the focus window may legitimately be that child.
+    return gti.hwndActive == w || (gti.hwndActive && IsChild(w, gti.hwndActive));
+}
+
 static LRESULT CALLBACK WxrWindowProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
 {
-    if (WxrSwallowInputMessage(msg)) return 0;          // gamepad only, see winlatorxr_input.inl
+    if (WxrSwallowInputMessage(msg, wp)) return 0;      // ESC/menu mouse pass; see winlatorxr_input.inl
+    if (WxrFocusLossMessage(msg, wp)) {
+        ++g_wxrFocusSwallowed;
+        WxrLogFocusLoss(msg, wp);
+        return 0;
+    }
+    if (msg == kWxrFocusMessage) {
+        const HWND before = GetForegroundWindow();
+        if (!WxrFocusSatisfied(w)) {
+            // SetForegroundWindow may fail when the process is not allowed to take it;
+            // SetActiveWindow/SetFocus still fix the window thread's own focus, which is
+            // what UE3's input and audio checks read.
+            if (before && before != w) SetForegroundWindow(w);
+            SetActiveWindow(w);
+            SetFocus(w);
+            ++g_wxrFocusRestored;
+            if (g_wxrFocusRestored < 8 || (g_wxrFocusRestored % 100) == 0)
+                Log("[wxr] focus: re-asserted the game window #%ld (%p -> %p)",
+                    g_wxrFocusRestored, (void*)before, (void*)GetForegroundWindow());
+        }
+        return 0;
+    }
     if (msg == kWxrPinMessage) {
         RECT before{};
         GetWindowRect(w, &before);
@@ -90,6 +159,30 @@ static void WxrKeepWindowPinned(IDirect3DDevice9* dev, long frame)
             ? SetWindowLongPtrW(g_wxrWindow, GWLP_WNDPROC, (LONG_PTR)&WxrWindowProc)
             : SetWindowLongPtrA(g_wxrWindow, GWLP_WNDPROC, (LONG_PTR)&WxrWindowProc));
         if (!g_wxrPrevProc) { Log("[wxr] could not subclass the game window - not pinning it"); attempts = 1000; }
+        else if (g_wxrWindow) {
+            // GetFocus/GetActiveWindow answer for the CALLING thread's queue, and this is
+            // the render thread; ask the window's own thread instead so the answer means
+            // what it says.
+            GUITHREADINFO gti{ sizeof(GUITHREADINFO) };
+            const DWORD tid = GetWindowThreadProcessId(g_wxrWindow, nullptr);
+            if (tid) GetGUIThreadInfo(tid, &gti);
+            Log("[wxr] focus: window %p, foreground %p, active %p, focus %p%s",
+                (void*)g_wxrWindow, (void*)GetForegroundWindow(), (void*)gti.hwndActive,
+                (void*)gti.hwndFocus, wxr::g_container ? " (container)" : " (desktop fallback)");
+        }
+    }
+    // The container presents one window, so nothing else legitimately owns focus. Re-assert
+    // it from the window's own thread (posting, not calling, for the deadlock reason above).
+    // The desktop fallback deliberately leaves alt-tab alone.
+    if (wxr::g_container && g_wxrPrevProc && (frame % 30) == 0 &&
+        !WxrFocusSatisfied(g_wxrWindow)) {
+        static int focusAttempts = 0;
+        if (focusAttempts < 30) {
+            if (++focusAttempts == 30)
+                Log("[wxr] focus: the game window will not take the foreground - "
+                    "leaving it to the window manager");
+            PostMessageA(g_wxrWindow, kWxrFocusMessage, 0, 0);
+        }
     }
     // Twice a second is plenty, and a window manager that keeps undoing it gets thirty tries.
     if (attempts >= 30 || (frame % 30) != 0 || WxrWindowPlaced(g_wxrWindow)) return;
@@ -393,12 +486,53 @@ static const char* WxrNotInControlReason()
     return nullptr;
 }
 
+// A level load destroys the player pawn before creating the next one. On the headset that
+// gap is long - the engine is emulated and the load movie is being decoded - and the picture
+// can sit on one frame for well over a minute. Log a heartbeat so a slow load is clearly
+// distinguishable from a real freeze, both in the log and in the advice given to the player.
+static void WxrTransitionTick(long frame)
+{
+    static bool  everHadPawn = false;
+    static int   noPawnRun = 0;
+    static long  noPawnFrame = -1;
+    static DWORD noPawnAt = 0, lastBeat = 0;
+    const bool havePawn = g_playerPawn && g_playerCtl;
+    if (havePawn) {
+        if (noPawnFrame >= 0) {
+            Log("*** [wxr] transition: player pawn/controller back at frame %ld after %.1f s"
+                " (gone since frame %ld) - level load complete",
+                frame, (GetTickCount() - noPawnAt) / 1000.0, noPawnFrame);
+            noPawnFrame = -1;
+        }
+        noPawnRun = 0;
+        everHadPawn = true;
+        return;
+    }
+    if (!everHadPawn) return;       // first startup, before any pawn has existed
+    if (noPawnRun < 1000000) ++noPawnRun;
+    if (noPawnFrame < 0 && noPawnRun >= 30) {
+        // Backdate by the frames already spent without a pawn. Thirty frames is a second at
+        // 30 fps, which filters a one-frame handover but still catches a load immediately.
+        noPawnFrame = frame - noPawnRun;
+        noPawnAt = GetTickCount() - (DWORD)(noPawnRun * 33);
+        lastBeat = GetTickCount();
+        Log("*** [wxr] transition: player pawn/controller gone at frame %ld - a level load"
+            " is in progress; the picture may sit still", noPawnFrame);
+    } else if (noPawnFrame >= 0 && GetTickCount() - lastBeat >= 5000) {
+        lastBeat = GetTickCount();
+        Log("[wxr] transition: still loading - no pawn for %.1f s (frame %ld, MANAGED=%ld)"
+            " - do not close the game",
+            (GetTickCount() - noPawnAt) / 1000.0, frame, g_poolManaged);
+    }
+}
+
 // Enters 2D at once, leaves it only after control has been stable for half a second, so a
 // one-frame camera handover at the end of a cutscene does not flash stereo.
 static void WxrUpdateFlatMode(long frame)
 {
     static int inControlRun = 0;
     static bool stereoWasOn = false;
+    WxrTransitionTick(frame);
     const char* reason = WxrNotInControlReason();
     const bool control = reason == nullptr;
     inControlRun = control ? inControlRun + 1 : 0;

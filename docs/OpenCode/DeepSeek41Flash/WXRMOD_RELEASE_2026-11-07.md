@@ -33,22 +33,84 @@ All changes are in `src/d3d9.cpp`.
    auto-arm path skips stereo, `AdoptLocatedViews` still supplies the forced
    FOV, and Auto resolution uses the full screen size rather than a doubled
    eye width. AER and SBS remain selectable.
-6. **Resolution re-apply after install:** the bundled file pins 1440x1080, so
-   `SyncEngineResolution()` runs again after the install with the explicit or
-   Auto size from `mevr.ini`. A 1280x720 selection is not overwritten by the
+6. **Resolution = auto on the WXR build:** mono queries the WinlatorXR
+   container desktop directly in `LoadSettings()` and uses it as the frame
+   size, so the first launch already gets the container maximum. The bundled
+   `TdEngine.ini` keeps 1920x1080 as a fallback, and `SyncEngineResolution()`
+   rewrites `ResX/ResY` to the auto size. The Resolution menu row is hidden in
+   the WXR build. A 1280x720 selection is not overwritten by the
    bundled pin.
 7. **DllMain order:** install config, re-apply resolution, enforce graphics.
-8. **OpenXR/OpenVR stripped from the WinlatorXR build as far as the shared
-   code allows:** `xr_diagnostics.inl` (OpenXR loader/layer/reflection
+8. **Input policy:** ESC is never blocked. Mouse messages and DirectInput
+   mouse state pass while the game is in a menu/2D state (`g_wxrFlat`) or the
+   VR panel is open; gameplay remains gamepad-only. DirectInput keyboard state
+   keeps `DIK_ESCAPE`; other keys stay silenced.
+9. **PC handshake fallback:** `ChooseXrDirectory()` uses `Z:\tmp\xr` when
+   `Z:\tmp` exists, otherwise `D:\xrtemp` (the HWXR/Shogo convention). It
+   writes `version`/`vr` there and reads `system` if present; `Present()` uses
+   `fopen` rather than `GetFileAttributes`, because the latter is unreliable
+   under Wine. `tools/fake-xrapi.py` now defaults to the same directory on
+   Windows.
+10. **Quest focus policy:** `WxrWindowProc` swallows `WM_KILLFOCUS`,
+    `WM_ACTIVATE(WA_INACTIVE)`, `WM_ACTIVATEAPP(FALSE)` and
+    `WM_NCACTIVATE(FALSE)`, so UE3 does not pause audio or set
+    `bIgnoreMoveInput` when WinlatorXR briefly moves the foreground away from
+    the only window. In a container (`Z:\tmp` exists) the window re-asserts the
+    foreground via a posted message on its own thread; the `D:\xrtemp` PC-test
+    fallback leaves alt-tab alone. The installed `TdEngine.ini` also has
+    `bPauseOnLossOfFocus=FALSE`. `ProbeInputGates()` now logs each
+    `bIgnoreMoveInput` change with the foreground/active window at that moment.
+11. **Level-transition heartbeat:** `WxrTransitionTick()` notices the player
+    pawn/controller disappearing for more than a second, logs the transition,
+    then a five-second `still loading` line with elapsed seconds and
+    `MANAGED` pool count, and logs when the pawn returns. This is diagnostic
+    only. The prologue -> training load looked like a freeze; the same handover
+    took 13.5 s on the PC run, while the reported Quest log ended 13.6 s after
+    it, before the ~45 MB training map had finished loading under Box64.
+12. **Head-roll direction:** `HeadRollSign` is now `1` = normal, `-1` =
+    inverted, `0` = injection off. Both signed values were reported wrong on
+    the headset, so `0` is the test default while we determine whether
+    WinlatorXR already handles roll. The Comfort menu page has a live HEAD ROLL
+    row; `END` still flips the sign, and the same sign feeds the logical head
+    frame used by the hands.
+13. **Cutscene head look:** `SampleScriptedHeadAngles()` now applies
+    `g_yawSign` to the scripted-camera yaw (it was raw, so cutscenes turned the
+    view opposite to gameplay) and uses the same sign as the controller-pitch
+    write for cinematic pitch. The previous opposite sign was inverted in
+    cutscenes while gameplay was correct. The scripted-look log prints both
+    effective signs.
+14. **Independent FOV controls:** the VR menu's FIELD OF VIEW page (reached
+    from Graphics -> XR FOV) has three sliders with visible bars:
+    `GameFov` (engine horizontal culling FOV, default `105`; `0` = auto widest
+    axis plus margin), `WinlatorXrFov` (HMD horizontal; `0` = auto/headset
+    native), and `WinlatorXrFovV` (HMD vertical; `0` = auto). The HMD pair in
+    `AdoptLocatedViews()` drives both the rendered target
+    frustum and the FOV sent to XrAPI; if only one axis is explicit, the other
+    is derived from the render aspect. All three save to `mevr.ini`, apply live,
+    and log their effective values.
+15. **Texture detail LEVEL:** the bundled `TdEngine.ini` uses the game's own
+    LOW texture bucket: max 256 for world/character/weapon/vehicle/effects, 512
+    for skybox and light/shadow. This replaces the previous medium 1024/2048
+    values.
+16. **Original renderer and window:** the WXR build subclasses/pins the game's
+    own `hFocusWindow` and hooks the game's existing D3D9 device; it does not
+    create a second renderer or window. `D3D9Ex` and `FastCapture` are PCVR
+    shared-surface capture features and are forced off for WinlatorXR, so the
+    game keeps its original plain D3D9 device. The menu rows are hidden in the
+    WXR build.
+17. **OpenXR/OpenVR stripped from the WinlatorXR build as far as the shared
+    code allows:** `xr_diagnostics.inl` (OpenXR loader/layer/reflection
    diagnostics) is excluded, the instance is created with zero extensions, and
    `XrDetailedLogging` is desktop-only. The remaining OpenXR headers are
    compile-time type declarations for the in-process XrAPI shim; the built DLL
    imports no `openxr_loader.dll`, `openvr_api.dll`, `d3d11.dll` or `dxgi.dll`.
 
 The bundled file carries what a key rewrite cannot add: the texture-group LODs,
-`[Engine.ISVHacks]`, `[ALAudio]`, `[Engine.GameEngine]`, `[Engine.Client]`, and
-the resolution keys. The in-place table remains the guarantee that an old user
-config cannot re-enable the expensive passes.
+`[Engine.ISVHacks]`, the game-default `[ALAudio]` device settings,
+`[Engine.GameEngine]`, `[Engine.Client]`, and the resolution keys. OpenAL Soft
+and the tweak tool's audio overrides are deliberately gone; the WXR mod no
+longer ships or replaces `OpenAL32.dll`. The in-place table remains the
+guarantee that an old user config cannot re-enable the expensive passes.
 
 ## Release overlay
 
@@ -57,15 +119,16 @@ config cannot re-enable the expensive passes.
 ```
 Binaries\
   d3d9.dll            WinlatorXR build, x86, no openxr_loader/d3d11/dxgi imports
-  mevr.ini            1440x1080, mono, WinlatorXrGraphics=quest, InstallConfig=on
+  mevr.ini            1920x1080, mono, WinlatorXrGraphics=quest, InstallConfig=on
   mevr-TdEngine.ini   performance config installed into Documents by the mod
   MirrorsEdge.exe     tweak-tool patched exe (GOG)
-  OpenAL32.dll        OpenAL Soft 1.25.1
   PhysXCore.dll       copy of PhysXCore.bak
   Macro, SpeedrunOff  optional tweak-tool scripts
 TdGame\
   Config\DefaultHudEffects.ini
-  CookedPC\Engine.u, TdGame.u, Ts_LOC_*.upk   (decompressed)
+  CookedPC\Engine.u, TdGame.u, Ts_LOC_int.upk  (original compressed for the
+  first device test; the tweak-tool decompressed versions moved to
+  Optional\Decompressed)
 Symbols\d3d9.pdb
 README.txt
 BUILD.txt
@@ -75,17 +138,16 @@ Key hashes:
 
 | File | SHA-256 |
 |---|---|
-| `d3d9.dll` | `D0AD5915041809485C03FB299AA3502DB231C09B05A7AAA3B1BC90E0F8F3B6D4` |
-| `mevr.ini` | `A87EB263711190BC3C9FF21A3D6CBBFDFA310E7007A7382E412665A1E2651173` |
-| `mevr-TdEngine.ini` | `A44BC437F6AF52519D0CC8DC2E294AFCB9F15892E8ECDAB33F6A435741423D47` |
+| `d3d9.dll` | `DF9A5215AE6B192376F118078ED2D31C0D794FDB13561738D7271966B64A273C` |
+| `mevr.ini` | `49E0FD66A0CB81AF123B4F35DE8DE40F6EC1013CCCA74DC1C55896A14AF048B1` |
+| `mevr-TdEngine.ini` | `3D09EE770B32728C4A4E3B848AF032AAAC685A15149218752DA0E5F02E3CF419` |
 | `MirrorsEdge.exe` | `EC0907678EA3F7DDD48950C0F9346D04EF6F8A6040227C1FFCD3CBCEF9E27C33` |
-| `OpenAL32.dll` | `0F8AC05ADF791904D6ECF74CDE08F6C0ED84411FC55DDC7B1B5E3EB106F34D4D` |
 | `DefaultHudEffects.ini` | `40A4E4E7A04865BC12E46CF5B082F09D7E884D88B1236542F2993F495CB9917B` |
-| `Engine.u` | `91C2D37C38361100831A682D88127FB30261FBF0F9751E3E7C1308D2964380EB` |
-| `TdGame.u` | `866F6F4AC7582F6B56B620FBEF452320757B21856905970707BE193A1E7017FB` |
-| `Ts_LOC_int.upk` | `B11DAB124A3C2D124158378CA70BB10087251E5F552EE1582A12C9D03348F1E3` |
+| `Engine.u` | `8C8A4C79FCFFCCC4882D27FFE522BC299B67D423595B921E0FAC518EF5B8E7FB` |
+| `TdGame.u` | `AF4A5ADA7972E949DF1F0C6588617143C86B8EF027F7FBC206ECFF1AD97B0524` |
+| `Ts_LOC_int.upk` | `3448981058D0469E9BC5BA1AF475B810F9A4A0AC3424617DDF77B2A71DB5145B` |
 
-Build identity: `2F60E228EC9A13870AD77F6E5C387B1B489BF542C108A0F03855B9EE2F10D727`.
+Build identity: `88A6F0743C8F44F800F495AC74456292E97EB37A1650EDC6313FC956FE030F37`.
 
 ## Build and verification
 
@@ -96,12 +158,12 @@ Build identity: `2F60E228EC9A13870AD77F6E5C387B1B489BF542C108A0F03855B9EE2F10D72
   `VCRUNTIME140`, UCRT. The x86 VC++ 2015–2022 runtime is required.
 - `Fallback\d3d9-mt.dll` is the same source rebuilt `/O2 /MT` and imports only
   `USER32`, `ADVAPI32`, `WS2_32`, `KERNEL32`; use it if the dynamic runtime is
-  missing (`89DB482A...`).
+  missing (`D3742FCC...`).
 - The desktop flavour was compile-checked (`/c`) to ensure the
   `FindTdEngineIniCandidate` refactor did not break it.
 - `tools/check-wxrmod-overlay.ps1` validates the overlay hashes, required
   `mevr.ini` keys, the performance keys, the x86 PE machine, and (with
-  `-GameDirectory`) the target exe version. It passes 24 checks against this
+  `-GameDirectory`) the target exe version. It passes 29 checks against this
   overlay and the GOG staging copy.
 - The DLL and game files were **not launched** and **not headset-tested**.
   This is a new candidate, not an approved release.
@@ -111,13 +173,14 @@ Build identity: `2F60E228EC9A13870AD77F6E5C387B1B489BF542C108A0F03855B9EE2F10D72
 - The installer overwrites the user `TdEngine.ini` on every launch. That is the
   intended "performance is king" behavior; `WinlatorXrInstallConfig = off`
   stops it, and the original is kept once as `.mevr-backup`.
-- The release sets `Resolution = 1440x1080` and `WinlatorXrStereo = mono`.
+- The release sets `Resolution = auto` (container desktop maximum),
+  `FrameCap = 60` and `WinlatorXrStereo = mono`.
   Mono VR is implemented in this build; AER and SBS remain selectable with
   `WinlatorXrStereo = aer|sbs`.
 - The patched `MirrorsEdge.exe` is from the GOG copy. Do not mix it with Steam
   files. Keep it paired with the modified `DefaultHudEffects.ini`.
-- `MaxChannels=256` is the tweak-tool value; test 64/128 if the CPU is the
-  limit.
+- Audio is no longer modified. The WXR mod ships no `OpenAL32.dll` and the
+  bundled `TdEngine.ini` uses the game's default `Generic Hardware` device.
 - The approved desktop v0.2.2-alpha release is untouched; this is a separate
   local Quest candidate.
 - Game-derived files live only under gitignored `Release/`; do not commit them.
@@ -144,24 +207,45 @@ writes; stop sending `MODE_VR 0` on shutdown; clamp `MODE_3D` to 0 for any
 `MODE_VR` other than 1 and log every UDP mode change; log a container-desktop
 vs `Resolution` mismatch.
 
-The remaining suspects, in test order: PhysX still enabled in-game; mono
-presentation (`WinlatorXrStereo=aer` is the known-good fallback); the tweak
-tool's decompressed packages; the patched exe/config-hash patch; OpenAL Soft;
-the bundled config/profile. The `memcpy` bad read at the transition makes a
+The next successful run (SecondAttempt) confirmed the read-only fix and the
+mode logging: the config installed, `UDP mode: MODE_VR 1, MODE_3D 0` (mono)
+and `MODE_VR 2, MODE_3D 0` (cutscene) appear, and there is no AER and no
+`MODE_VR 0`. The game still stalls at the same pawn/level transition, around
+frame 2800 / 62.75 s. One launch in that set also hit `CreateDeviceEx`
+`0x8876086A` before any frame; that is a separate startup failure, not the
+transition hang.
+
+A native-Windows PC test with the same overlay loaded past the intro video and
+reached the tutorial (`frames presented 3861`, clean summary). It had no
+control because the WinlatorXR flavour could not find `Z:\tmp\xr\system`, so
+XR never started and no pad was synthesised. That is now fixed the way
+HWXR/Shogo do it: if `Z:\tmp` does not exist, use `D:\xrtemp`, write
+`version`/`vr` there, and start the UDP listener even without `system`. The PC
+result also indicates the compressed packages, patched exe, config and mod load
+past the intro; the Quest transition hang is more likely specific to the
+WinlatorXR/Box64 environment or its XR/presentation path.
+
+The main overlay now uses the **original compressed** `Engine.u`, `TdGame.u`
+and `Ts_LOC_int.upk` for the first stability test; the tweak-tool decompressed
+versions are in `Optional\Decompressed`. The remaining suspects, in test order:
+PhysX still enabled in-game; mono presentation (`WinlatorXrStereo=aer` is the
+known-good fallback); the patched exe/config-hash patch; the bundled
+config/profile. OpenAL is no longer a variable: it was removed from the WXR
+mod, so it is not a suspect. The `memcpy` bad read in the previous run makes a
 package/exe issue more likely than the mod's rendering path, but the isolation
 steps in `Release/WXRMOD/README.txt` are the test.
 
 ## Next checks
 
 1. Install the overlay in the Quest game folder, with the container screen at
-   1440x1080 for mono (or a 16:9 screen plus a 16:9 `Resolution`). Launch once,
+   1920x1080 for mono. Launch once,
    quit, relaunch so the installed config is read. In `mevr.log`, confirm
    `[wxr] config: installed bundled TdEngine.ini`,
    `[wxr] graphics: Quest performance profile`,
    `[cfg] WinlatorXrInstallConfig = on`, and `[cfg] WinlatorXrStereo = mono`.
-2. Confirm the 4:3 1440x1080 image is not white-screened and the game reaches
+2. Confirm the 1920x1080 image is not white-screened and the game reaches
    gameplay. If it fails, restore the untouched exe/config pair first.
 3. Compare fps and chapter-load time against the previous AER build.
-4. Compare mono at 1440x1080 against `WinlatorXrStereo = aer` and `sbs` at a
-   16:9 resolution (1920x1080 or 1536x864). If mono is stable but the image
-   is too soft, raise Resolution or test AER.
+4. Compare mono at 1920x1080 against `WinlatorXrStereo = aer` and `sbs` at
+   the same resolution. If mono is stable but the image is too soft, raise
+   Resolution or test AER.

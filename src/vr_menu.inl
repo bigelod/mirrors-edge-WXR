@@ -22,10 +22,11 @@ static uint32_t g_smoothFlagMask = 0;
 static bool g_menuUnlimitedFailed = false;
 
 enum MenuId {
-    MHands, MArm, MGuns, MMelee, MParkour, MCrouch, MBalance, MPitch, MRoll, MYaw, MReticle,
-    MFpsCap, MResolution, MLens, MFps, MRecenter, MGunPage, MSize, MDistance, MDefaults,
+    MHands, MArm, MGuns, MMelee, MParkour, MCrouch, MBalance, MHeadRoll, MPitch, MRoll, MYaw, MReticle,
+    MFpsCap, MResolution, MFovPage, MLens, MFps, MRecenter, MGunPage, MSize, MDistance, MDefaults,
     MDebug, MLogging, MFast, MEx, MGunHand, MGunDown, MGunRight, MGunF, MGunR, MGunU,
-    MController, MTurnMode, MTurnSpeed, MSnapAngle, MUiScale, MUiHeight, MPageControls,
+    MController, MTurnMode, MTurnSpeed, MSnapAngle, MUiScale, MUiHeight,
+    MFovH, MFovV, MGameFov, MPageControls,
     MBack, MDone, MConfirmReset, MPageHands, MPageComfort, MPageGraphics, MPageCalibration, MPageTrouble
 };
 struct MenuItem { MenuId id; const char* label; const char* help; };
@@ -56,6 +57,7 @@ static const MenuItem kMenuHands[] = {
 static const MenuItem kMenuComfort[] = {
     {MCrouch,"PHYSICAL CROUCHING","REQUIRES ARM SWING. RECENTER WHILE STANDING"},
     {MBalance,"HEAD-TILT BEAM BALANCE","LEAN YOUR HEAD TO BALANCE ON NARROW BEAMS"},
+    {MHeadRoll,"HEAD ROLL","INJECT HEAD TILT: NORMAL, INVERTED OR OFF"},
     {MPitch,"LOCK ANIMATION PITCH","REMOVE ANIMATED UP/DOWN CAMERA ROTATION"},
     {MRoll,"LOCK ANIMATION ROLL","REMOVE ANIMATED CAMERA TILT"},
     {MYaw,"LOCK ANIMATION YAW","ADVANCED: CAN SEPARATE VIEW FROM BODY DIRECTION"},
@@ -64,7 +66,10 @@ static const MenuItem kMenuComfort[] = {
 };
 static const MenuItem kMenuGraphics[] = {
     {MFpsCap,"FRAME CAP","UNLIMITED REMOVES ENGINE CAP; XR STILL PACES FRAMES"},
+#if !MEVR_WINLATORXR
     {MResolution,"RESOLUTION","RESTART REQUIRED. AUTO USES YOUR HEADSET"},
+#endif
+    {MFovPage,"XR FOV","GAME, HMD HORIZONTAL AND HMD VERTICAL FOV"},
     {MLens,"LENS FLARES","RESTART REQUIRED"},
     {MFps,"FPS DISPLAY","SMALL HEADSET READOUT WITHOUT THE DEBUG OVERLAY"},
     {MUiScale,"GAME UI SIZE","TRAINING POP-UPS AND NATIVE MENUS. DEFAULT 65 PERCENT"},
@@ -82,9 +87,19 @@ static const MenuItem kMenuCalibration[] = {
 static const MenuItem kMenuTrouble[] = {
     {MDebug,"DEBUG OVERLAY","DEVELOPMENT TEXT AND KEYBOARD HOTKEYS"},
     {MLogging,"DETAILED LOGGING","HAND, ARM SWING AND PARKOUR LOGGING"},
+#if !MEVR_WINLATORXR
+    // PCVR capture path. The WXR frame is the game's own backbuffer, so these
+    // would only substitute an Ex device for no benefit.
     {MFast,"FAST CAPTURE","GPU FRAME COPY. REQUIRES D3D9EX AT STARTUP"},
     {MEx,"D3D9EX","RESTART REQUIRED. OFF ALSO DISABLES FAST CAPTURE"},
+#endif
     {MBack,"BACK","RETURN TO THE MAIN SETTINGS PAGE"}
+};
+static const MenuItem kMenuFov[] = {
+    {MGameFov,"GAME FOV","ENGINE CULLING FOV. AUTO USES THE WIDEST AXIS PLUS MARGIN"},
+    {MFovH,"HMD FOV H","HORIZONTAL FOV SENT TO WINLATORXR. 0 = AUTO"},
+    {MFovV,"HMD FOV V","VERTICAL FOV SENT TO WINLATORXR. 0 = AUTO"},
+    {MBack,"BACK","RETURN TO GRAPHICS AND PERFORMANCE"}
 };
 static const MenuItem kMenuGun[] = {
     {MGunHand,"CALIBRATE HAND","CHOOSE LEFT OR RIGHT"},
@@ -104,7 +119,8 @@ static const MenuItem* MenuItems(int* count) {
     switch(g_menuPage) {
         MENU_PAGE(1,kMenuHands); MENU_PAGE(2,kMenuComfort); MENU_PAGE(3,kMenuGraphics);
         MENU_PAGE(4,kMenuCalibration); MENU_PAGE(5,kMenuTrouble); MENU_PAGE(6,kMenuGun);
-        MENU_PAGE(7,kMenuReset); MENU_PAGE(8,kMenuControls); default: *count=7; return kMenuRoot;
+        MENU_PAGE(7,kMenuReset); MENU_PAGE(8,kMenuControls); MENU_PAGE(9,kMenuFov);
+        default: *count=7; return kMenuRoot;
     }
 #undef MENU_PAGE
 }
@@ -149,6 +165,13 @@ static bool VrMenuLoadSetting(const char* key,const char* val) {
     if(!_stricmp(key,"SnapTurnAngle")){if(!MenuParseNumber(val,15.f,90.f,&v))return false;g_snapTurnAngle=v;return true;}
     if(!_stricmp(key,"GameUIScale")){if(!MenuParseNumber(val,.4f,1.f,&v))return false;g_gameUiScale=v;return true;}
     if(!_stricmp(key,"GameUIHeight")){if(!MenuParseNumber(val,-.2f,.2f,&v))return false;g_gameUiHeight=v;return true;}
+    if(!_stricmp(key,"WinlatorXrFov") || !_stricmp(key,"WinlatorXrFovV") || !_stricmp(key,"GameFov")) {
+        float* f = !_stricmp(key,"WinlatorXrFov") ? &g_wxrFov
+                 : !_stricmp(key,"WinlatorXrFovV") ? &g_wxrFovV : &g_gameFov;
+        if(!_stricmp(val,"auto") || !strcmp(val,"0")) { *f=0.0f; return true; }
+        if(MenuParseNumber(val,60.f,120.f,&v)) { *f=v; return true; }
+        return false;
+    }
     if(_stricmp(key,"MenuWidth")==0 || _stricmp(key,"MenuDistance")==0) {
         const bool width=_stricmp(key,"MenuWidth")==0;
         if(MenuParseNumber(val,width?.7f:.8f,width?1.6f:2.5f,&v)) {
@@ -214,6 +237,7 @@ static bool SaveMenuSettings() {
     boolean("GripToGrip",g_motionHands);boolean("StickJumpTurn",g_motionHands);
     boolean("PistolHands",g_menuGuns);boolean("MotionPunch",g_menuMelee);boolean("Parkour",g_menuParkour);
     boolean("ArmSwingCrouch",g_armSwingCrouch);boolean("BalanceHeadRoll",g_balanceRoll);
+    edits.push_back({"HeadRollSign",g_rollSign==1?"1":g_rollSign==-1?"-1":"0"});
     boolean("LockAnimPitch",!MenuAnimPreference(0));boolean("LockAnimRoll",!MenuAnimPreference(1));boolean("LockAnimYaw",!MenuAnimPreference(2));
     edits.push_back({"FrameCap",g_fpsCap==0?"unlimited":std::to_string((int)g_fpsCap)});
     edits.push_back({"Resolution",g_menuResolution});boolean("LensFlares",g_menuLens);boolean("D3D9Ex",g_menuEx);
@@ -224,6 +248,7 @@ static bool SaveMenuSettings() {
     edits.push_back({"TurnMode",g_snapTurning?"snap":"smooth"});
     number("SmoothTurnSpeed",g_smoothTurnSpeed);number("SnapTurnAngle",g_snapTurnAngle);
     number("GameUIScale",g_gameUiScale);number("GameUIHeight",g_gameUiHeight);
+    number("WinlatorXrFov",g_wxrFov);number("WinlatorXrFovV",g_wxrFovV);number("GameFov",g_gameFov);
     boolean("ShowReticle",g_showReticle);
     for(int h=0;h<2;++h)for(int a=0;a<5;++a) {
         static const char* suffix[]={"WristDownDegrees","WristRightDegrees","ForwardMm","RightMm","UpMm"};
@@ -345,14 +370,15 @@ static void MenuOpen(uint64_t now) {
 static void MenuRestoreDefaults() {
     if(!MenuAtomicWrite(kVrShippedDefaults))return;
     // Restart-only and hidden experimental settings take effect next launch.
-    g_motionHands=true;g_menuArm=true;g_menuGuns=g_menuMelee=g_menuParkour=true;
+    g_motionHands=true;g_menuArm=false;g_menuGuns=g_menuMelee=g_menuParkour=true;
     g_armSwingCrouch=g_balanceRoll=true;
     MenuAnimPreference(0)=MenuAnimPreference(1)=MenuAnimPreference(2)=true;
-    g_fpsCap=72;g_menuResolution="auto";g_menuLens=false;g_menuEx=true;g_fastCapture=true;
+    g_fpsCap=60;g_menuResolution="auto";g_menuLens=false;g_menuEx=false;g_fastCapture=false;
     g_debug=false;g_overlay=true;g_motionHandsDebug=g_armSwingDebug=g_parkourDebug=false;
     g_menuSize=1.1f;g_menuDistance=1.5f;g_menuFps=false;
     g_controllerMode=0;g_snapTurning=false;g_smoothTurnSpeed=1;g_snapTurnAngle=45;
     g_gameUiScale=.65f;g_gameUiHeight=0;
+    g_wxrFov=0.0f;g_wxrFovV=0.0f;g_gameFov=105.0f;g_rollSign=0;
     g_showReticle=false;
     g_gunWristDownDeg[0]=g_gunWristDownDeg[1]=40;
     g_gunWristRightDeg[0]=g_gunWristRightDeg[1]=-10;
@@ -367,7 +393,8 @@ static void MenuActivate(MenuId id,int delta) {
     const auto choose=[&](bool current){return activate?!current:delta>0;};
     if(MenuBlockedItem(id)){MenuMessage("ENABLE THE REQUIRED FEATURE FIRST");return;}
     if(id>=MPageHands && id<=MPageTrouble){g_menuPage=1+(id-MPageHands);g_menuRow=0;return;}
-    if(id==MBack){g_menuPage=g_menuPage==6||g_menuPage==7?4:0;g_menuRow=0;return;}
+    if(id==MBack){g_menuPage=g_menuPage==9?3:(g_menuPage==6||g_menuPage==7?4:0);g_menuRow=0;return;}
+    if(id==MFovPage){g_menuPage=9;g_menuRow=0;return;}
     if(id==MPageControls){g_menuPage=8;g_menuRow=0;return;}
     if(id==MDone){MenuClose();return;}
     if(id==MGunPage){g_menuPage=6;g_menuRow=0;return;}
@@ -389,6 +416,7 @@ static void MenuActivate(MenuId id,int delta) {
         case MParkour:g_menuParkour=choose(g_menuParkour);break;
         case MCrouch:g_armSwingCrouch=choose(g_armSwingCrouch);break;
         case MBalance:g_balanceRoll=choose(g_balanceRoll);break;
+        case MHeadRoll:g_rollSign=g_rollSign==1?-1:g_rollSign==-1?0:1;break;
         case MPitch:MenuAnimPreference(0)=!choose(!MenuAnimPreference(0));break;
         case MRoll:MenuAnimPreference(1)=!choose(!MenuAnimPreference(1));break;
         case MYaw:MenuAnimPreference(2)=!choose(!MenuAnimPreference(2));break;
@@ -405,6 +433,12 @@ static void MenuActivate(MenuId id,int delta) {
             static const char* values[]={"off","auto","1920x1080","2560x1440","3200x1800","3840x2160","4224x2376"};
             int index=0;for(int i=0;i<7;++i)if(g_menuResolution==values[i])index=i;
             g_menuResolution=values[(index+delta+7)%7];g_menuRestart=true;break;
+        }
+        case MFovH: case MFovV: case MGameFov: {
+            float* f=id==MFovH?&g_wxrFov:id==MFovV?&g_wxrFovV:&g_gameFov;
+            static const float values[]={0,60,65,70,75,80,85,90,95,100,105,110,115,120};
+            int index=0;for(int i=0;i<14;++i)if(fabsf(*f-values[i])<0.5f)index=i;
+            *f=values[(index+delta+14)%14];break;
         }
         case MLens:g_menuLens=choose(g_menuLens);g_menuRestart=true;break;
         case MEx:g_menuEx=choose(g_menuEx);g_menuRestart=true;break;
@@ -428,6 +462,7 @@ static void MenuValue(MenuId id,char* out,size_t cap) {
         case MHands:b=g_motionHands;break;case MArm:b=g_menuArm;break;
         case MGuns:b=g_menuGuns;break;case MMelee:b=g_menuMelee;break;case MParkour:b=g_menuParkour;break;
         case MCrouch:b=g_armSwingCrouch;break;case MBalance:b=g_balanceRoll;break;
+        case MHeadRoll:boolean=false;word=g_rollSign==1?"NORMAL":g_rollSign==-1?"INVERTED":"OFF";break;
         case MReticle:b=g_showReticle;break;
         case MPitch:b=!MenuAnimPreference(0);break;case MRoll:b=!MenuAnimPreference(1);break;case MYaw:b=!MenuAnimPreference(2);break;
         case MLens:b=g_menuLens;break;case MFps:b=g_menuFps;break;case MEx:b=g_menuEx;break;case MFast:b=g_fastCapture;break;
@@ -444,6 +479,9 @@ static void MenuValue(MenuId id,char* out,size_t cap) {
         case MUiHeight:sprintf_s(out,cap,"%+.0f%%",g_gameUiHeight*100.);break;
         case MFpsCap:if(g_fpsCap==0)word=g_menuUnlimitedFailed?"UNAVAILABLE":"UNLIMITED";else sprintf_s(out,cap,"%.0f",(double)g_fpsCap);break;
         case MResolution:word=g_menuResolution.c_str();break;
+        case MFovH:if(g_wxrFov<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_wxrFov);break;
+        case MFovV:if(g_wxrFovV<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_wxrFovV);break;
+        case MGameFov:if(g_gameFov<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_gameFov);break;
         case MSize:sprintf_s(out,cap,"%.2f M",(double)g_menuSize);break;
         case MDistance:sprintf_s(out,cap,"%.2f M",(double)g_menuDistance);break;
         case MGunHand:word=g_menuGunHand==0?"LEFT":"RIGHT";break;
@@ -483,7 +521,9 @@ static bool VrMenuInputTick(XrTime, bool focused,bool y,bool a,bool b,bool other
         else if(events.accept)MenuActivate(items[g_menuRow].id,0);
         else if(events.value) {
             const auto id=items[g_menuRow].id;
-            if(id<=MFps || id==MSize || id==MDistance || (id>=MDebug && id<=MGunU) || (id>=MController&&id<=MUiHeight))MenuActivate(id,events.value);
+            if(id<=MFps || id==MSize || id==MDistance || (id>=MDebug && id<=MGunU) ||
+               (id>=MController&&id<=MUiHeight) || id==MFovH || id==MFovV || id==MGameFov)
+                MenuActivate(id,events.value);
         }
     }
     if(g_menuPausePending || g_menuClosing) {
@@ -551,14 +591,28 @@ static void MenuRasterize(int count,const MenuItem* items,const char values[][64
         std::fill(g_menuPixels.begin(),g_menuPixels.end(),black);
         if(g_menuOpen) {
             static const char* titles[]={"MIRROR'S EDGE VR","HANDS AND MOVEMENT","COMFORT","GRAPHICS AND PERFORMANCE",
-                "CALIBRATION AND MENU","TROUBLESHOOTING","GUN ALIGNMENT","RESTORE DEFAULTS?","CONTROLLERS AND TURNING"};
+                "CALIBRATION AND MENU","TROUBLESHOOTING","GUN ALIGNMENT","RESTORE DEFAULTS?","CONTROLLERS AND TURNING",
+                "FIELD OF VIEW"};
             MenuText(40,40,titles[g_menuPage],5,green);MenuRect(40,98,1120,3,green);
             for(int i=0;i<count;++i) {
-                const int y=140+i*82;const bool selected=i==g_menuRow;
+                const int y=140+i*76;const bool selected=i==g_menuRow;
                 if(selected)MenuRect(28,y-16,1144,68,green);
                 const uint32_t ink=selected?black:MenuBlockedItem(items[i].id)?dim:green;
                 MenuText(48,y,items[i].label,4,ink);
                 MenuText(1144-(int)strlen(values[i])*24,y,values[i],4,ink);
+                // The three independent FOV controls get a real slider bar: track,
+                // filled portion and knob. 0/auto sits at the left end.
+                const MenuId rowId=items[i].id;
+                if(rowId==MFovH || rowId==MFovV || rowId==MGameFov) {
+                    const float v=rowId==MFovH?g_wxrFov:rowId==MFovV?g_wxrFovV:g_gameFov;
+                    const int bx=640,bw=340,by=y+42;
+                    MenuRect(bx,by,bw,4,selected?black:dim);
+                    float f=(v<=0.0f)?0.0f:(v-60.0f)/60.0f;
+                    if(f<0.0f)f=0.0f;if(f>1.0f)f=1.0f;
+                    const int fw=(int)(f*(float)bw);
+                    MenuRect(bx,by-2,fw,8,ink);
+                    MenuRect(bx+(fw>6?fw-6:0),by-6,10,16,ink);
+                }
             }
             MenuRect(40,747,1120,2,green);
             // Wrap help at a word boundary; three-pixel glyphs fit 62 characters.

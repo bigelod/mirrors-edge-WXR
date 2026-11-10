@@ -37,8 +37,9 @@ static bool WxrMouseAllowed()
 static bool WxrSwallowInputMessage(UINT msg, WPARAM wp)
 {
     if (!g_wxrBlockKeyboardMouse) return false;
-    if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) {
-        if (wp == VK_ESCAPE) return false;       // never block ESC
+    if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP ||
+        msg == WM_CHAR) {
+        if (wp == VK_ESCAPE || wp == 27) return false;   // never block ESC
     }
     if (WxrMouseAllowed()) {
         if ((msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
@@ -52,14 +53,24 @@ static bool WxrSwallowInputMessage(UINT msg, WPARAM wp)
 // ---- key state, for the game's own callers only ----
 static SHORT (WINAPI *g_origGetAsyncKeyState)(int) = nullptr;
 static SHORT (WINAPI *g_origGetKeyState)(int) = nullptr;
+
+static bool WxrKeyAllowed(int key)
+{
+    if (key == VK_ESCAPE) return true;
+    if (WxrMouseAllowed() &&
+        (key == VK_LBUTTON || key == VK_RBUTTON || key == VK_MBUTTON ||
+         key == VK_XBUTTON1 || key == VK_XBUTTON2)) return true;
+    return false;
+}
+
 static SHORT WINAPI WxrGetAsyncKeyState(int key)
 {
-    if (g_wxrBlockKeyboardMouse && WxrCalledFromGame(_ReturnAddress())) return 0;
+    if (g_wxrBlockKeyboardMouse && WxrCalledFromGame(_ReturnAddress()) && !WxrKeyAllowed(key)) return 0;
     return g_origGetAsyncKeyState(key);
 }
 static SHORT WINAPI WxrGetKeyState(int key)
 {
-    if (g_wxrBlockKeyboardMouse && WxrCalledFromGame(_ReturnAddress())) return 0;
+    if (g_wxrBlockKeyboardMouse && WxrCalledFromGame(_ReturnAddress()) && !WxrKeyAllowed(key)) return 0;
     return g_origGetKeyState(key);
 }
 
@@ -70,12 +81,21 @@ static SHORT WINAPI WxrGetKeyState(int key)
 static const GUID kWxrSysKeyboard = { 0x6F1D2B61, 0xD5A0, 0x11CF, { 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } };
 static const GUID kWxrSysMouse    = { 0x6F1D2B60, 0xD5A0, 0x11CF, { 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } };
 static void* g_wxrSilenced[8] = {};
+static bool  g_wxrSilencedKeyboard[8] = {};
 static volatile LONG g_wxrSilencedCount = 0;
 
 static bool WxrIsSilenced(void* device)
 {
     const LONG n = g_wxrSilencedCount;
     for (LONG i = 0; i < n && i < 8; ++i) if (g_wxrSilenced[i] == device) return true;
+    return false;
+}
+
+static bool WxrIsSilencedKeyboard(void* device)
+{
+    const LONG n = g_wxrSilencedCount;
+    for (LONG i = 0; i < n && i < 8; ++i)
+        if (g_wxrSilenced[i] == device) return g_wxrSilencedKeyboard[i];
     return false;
 }
 
@@ -91,14 +111,38 @@ static PFN_DirectInput8Create g_origDirectInput8Create = nullptr;
 static HRESULT STDMETHODCALLTYPE WxrDIGetState(IDirectInputDevice8W* self, DWORD size, LPVOID data)
 {
     const HRESULT hr = g_origDIGetState(self, size, data);
-    if (g_wxrBlockKeyboardMouse && SUCCEEDED(hr) && data && WxrIsSilenced(self)) memset(data, 0, size);
+    if (!g_wxrBlockKeyboardMouse || FAILED(hr) || !data || !WxrIsSilenced(self)) return hr;
+    if (WxrIsSilencedKeyboard(self)) {
+        // The keyboard state is indexed by DIK scan code; DIK_ESCAPE is 0x01.
+        BYTE esc = (size > 1) ? ((BYTE*)data)[1] : 0;
+        memset(data, 0, size);
+        if (size > 1) ((BYTE*)data)[1] = esc;
+    } else if (!WxrMouseAllowed()) {
+        memset(data, 0, size);
+    }
     return hr;
 }
 static HRESULT STDMETHODCALLTYPE WxrDIGetData(IDirectInputDevice8W* self, DWORD size, LPDIDEVICEOBJECTDATA data,
                                               LPDWORD inOut, DWORD flags)
 {
     const HRESULT hr = g_origDIGetData(self, size, data, inOut, flags);
-    if (g_wxrBlockKeyboardMouse && SUCCEEDED(hr) && inOut && WxrIsSilenced(self)) *inOut = 0;
+    if (!g_wxrBlockKeyboardMouse || FAILED(hr) || !inOut || !WxrIsSilenced(self)) return hr;
+    if (!WxrIsSilencedKeyboard(self) && WxrMouseAllowed()) return hr;
+    if (WxrIsSilencedKeyboard(self)) {
+        // Keep only DIK_ESCAPE events; compact the buffered array in place.
+        const DWORD count = *inOut;
+        DWORD kept = 0;
+        BYTE* base = (BYTE*)data;
+        for (DWORD i = 0; i < count; ++i) {
+            const DIDEVICEOBJECTDATA* ev = (const DIDEVICEOBJECTDATA*)(base + (size_t)i * size);
+            if (ev->dwOfs != 1) continue;             // DIK_ESCAPE
+            if (kept != i) memcpy(base + (size_t)kept * size, ev, size);
+            ++kept;
+        }
+        *inOut = kept;
+    } else {
+        *inOut = 0;                                   // gameplay: no mouse
+    }
     return hr;
 }
 static HRESULT STDMETHODCALLTYPE WxrDICreateDevice(IDirectInput8W* self, REFGUID guid, LPDIRECTINPUTDEVICE8W* out,
@@ -109,13 +153,16 @@ static HRESULT STDMETHODCALLTYPE WxrDICreateDevice(IDirectInput8W* self, REFGUID
         const bool keyboard = IsEqualGUID(guid, kWxrSysKeyboard), mouse = IsEqualGUID(guid, kWxrSysMouse);
         if (keyboard || mouse) {
             const LONG slot = InterlockedIncrement(&g_wxrSilencedCount) - 1;
-            if (slot < 8) g_wxrSilenced[slot] = *out;
+            if (slot < 8) {
+                g_wxrSilenced[slot] = *out;
+                g_wxrSilencedKeyboard[slot] = keyboard;
+            }
             if (!g_origDIGetState) {
                 // GetDeviceState is slot 9 and GetDeviceData slot 10 of IDirectInputDevice8.
                 g_origDIGetState = (PFN_DIGetState)PatchVTable(*out, 9, (void*)&WxrDIGetState);
                 g_origDIGetData  = (PFN_DIGetData)PatchVTable(*out, 10, (void*)&WxrDIGetData);
             }
-            Log("[wxr] DirectInput %s silenced (gamepad only)", keyboard ? "keyboard" : "mouse");
+            Log("[wxr] DirectInput %s silenced in gameplay (ESC/menu mouse pass)", keyboard ? "keyboard" : "mouse");
         }
     }
     return hr;
@@ -150,5 +197,6 @@ static void WxrInstallInputBlock()
     hook(L"user32.dll", "GetKeyState", (void*)&WxrGetKeyState, (void**)&g_origGetKeyState);
     // A static import of the game, so mapped already; no LoadLibrary under the loader lock.
     hook(L"dinput8.dll", "DirectInput8Create", (void*)&WxrDirectInput8Create, (void**)&g_origDirectInput8Create);
-    Log("*** [wxr] gamepad only: the game's keyboard and mouse are silenced (%d hooks; window input dropped)", hooked);
+    Log("*** [wxr] gamepad gameplay: ESC always passes; mouse passes in menus/2D;"
+        " other keyboard and gameplay mouse are silenced (%d hooks)", hooked);
 }

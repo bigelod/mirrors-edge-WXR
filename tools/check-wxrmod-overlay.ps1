@@ -48,28 +48,36 @@ if (-not (Test-Path -LiteralPath $OverlayDirectory)) {
 }
 
 # The three install files plus the game/config files the tweak tool touched.
-Expect-File 'Binaries\d3d9.dll' 'D0AD5915041809485C03FB299AA3502DB231C09B05A7AAA3B1BC90E0F8F3B6D4'
-Expect-File 'Binaries\mevr.ini' 'A87EB263711190BC3C9FF21A3D6CBBFDFA310E7007A7382E412665A1E2651173'
-Expect-File 'Binaries\mevr-TdEngine.ini' 'A44BC437F6AF52519D0CC8DC2E294AFCB9F15892E8ECDAB33F6A435741423D47'
+Expect-File 'Binaries\d3d9.dll' 'DF9A5215AE6B192376F118078ED2D31C0D794FDB13561738D7271966B64A273C'
+Expect-File 'Binaries\mevr.ini' '49E0FD66A0CB81AF123B4F35DE8DE40F6EC1013CCCA74DC1C55896A14AF048B1'
+Expect-File 'Binaries\mevr-TdEngine.ini' '3D09EE770B32728C4A4E3B848AF032AAAC685A15149218752DA0E5F02E3CF419'
 Expect-File 'Binaries\MirrorsEdge.exe' 'EC0907678EA3F7DDD48950C0F9346D04EF6F8A6040227C1FFCD3CBCEF9E27C33'
-Expect-File 'Binaries\OpenAL32.dll' '0F8AC05ADF791904D6ECF74CDE08F6C0ED84411FC55DDC7B1B5E3EB106F34D4D'
 Expect-File 'Binaries\PhysXCore.dll' $null
-Expect-File 'Fallback\d3d9-mt.dll' '89DB482AE40654EB2E666C3025311E5252F768B7FC8AA9C50BD504CDB02E0F31'
+Expect-File 'Fallback\d3d9-mt.dll' 'D3742FCC0B700A02B914E54EB1CC375D8E3807430DF39F31D06F9BA086FB9616'
 Expect-File 'TdGame\Config\DefaultHudEffects.ini' '40A4E4E7A04865BC12E46CF5B082F09D7E884D88B1236542F2993F495CB9917B'
-Expect-File 'TdGame\CookedPC\Engine.u' '91C2D37C38361100831A682D88127FB30261FBF0F9751E3E7C1308D2964380EB'
-Expect-File 'TdGame\CookedPC\TdGame.u' '866F6F4AC7582F6B56B620FBEF452320757B21856905970707BE193A1E7017FB'
-Expect-File 'TdGame\CookedPC\Ts_LOC_int.upk' 'B11DAB124A3C2D124158378CA70BB10087251E5F552EE1582A12C9D03348F1E3'
+Expect-File 'TdGame\CookedPC\Engine.u' '8C8A4C79FCFFCCC4882D27FFE522BC299B67D423595B921E0FAC518EF5B8E7FB'
+Expect-File 'TdGame\CookedPC\TdGame.u' 'AF4A5ADA7972E949DF1F0C6588617143C86B8EF027F7FBC206ECFF1AD97B0524'
+Expect-File 'TdGame\CookedPC\Ts_LOC_int.upk' '3448981058D0469E9BC5BA1AF475B810F9A4A0AC3424617DDF77B2A71DB5145B'
+if (Test-Path -LiteralPath (Join-Path $OverlayDirectory 'Binaries\OpenAL32.dll')) {
+    $fail.Add('Binaries\OpenAL32.dll is present - the WXR mod no longer ships or replaces OpenAL')
+} else {
+    $ok.Add('no bundled OpenAL32.dll')
+}
 
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrGraphics\s*=\s*quest\s*$' 'WinlatorXrGraphics = quest'
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrInstallConfig\s*=\s*on\s*$' 'WinlatorXrInstallConfig = on'
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrStereo\s*=\s*mono\s*$' 'WinlatorXrStereo = mono'
-Expect-Text 'Binaries\mevr.ini' '(?m)^\s*Resolution\s*=\s*1440x1080\s*$' 'Resolution = 1440x1080'
-Expect-Text 'Binaries\mevr.ini' '(?m)^\s*FrameCap\s*=\s*72\s*$' 'FrameCap = 72'
+Expect-Text 'Binaries\mevr.ini' '(?m)^\s*Resolution\s*=\s*auto\s*$' 'Resolution = auto'
+Expect-Text 'Binaries\mevr.ini' '(?m)^\s*FrameCap\s*=\s*60\s*$' 'FrameCap = 60'
+Expect-Text 'Binaries\mevr.ini' '(?m)^\s*HeadRollSign\s*=\s*0\s*$' 'HeadRollSign = 0'
+Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrFov\s*=\s*0\s*$' 'WinlatorXrFov = 0'
+Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrFovV\s*=\s*0\s*$' 'WinlatorXrFovV = 0'
+Expect-Text 'Binaries\mevr.ini' '(?m)^\s*GameFov\s*=\s*105\s*$' 'GameFov = 105'
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*DynamicShadows\s*=\s*False\s*$' 'DynamicShadows=False'
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*LightEnvironmentShadows\s*=\s*False\s*$' 'LightEnvironmentShadows=False'
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*Distortion\s*=\s*False\s*$' 'Distortion=False'
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*DepthOfField\s*=\s*False\s*$' 'DepthOfField=False'
-Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*ResX\s*=\s*1440\s*$' 'ResX=1440'
+Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*ResX\s*=\s*1920\s*$' 'ResX=1920'
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*ResY\s*=\s*1080\s*$' 'ResY=1080'
 if ((Get-Content -LiteralPath (Join-Path $OverlayDirectory 'Binaries\mevr-TdEngine.ini') -Raw) -match '(?m)^\[AppCompat\]') {
     $warn.Add('mevr-TdEngine.ini still contains [AppCompat]; desktop CPU/GPU scores may leak into the headset')
