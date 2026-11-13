@@ -10,7 +10,7 @@ static bool g_menuFps = false, g_menuEx = true, g_menuLens = false;
 static bool g_showReticle=false;
 static int g_menuHudOffset=-1,g_menuReticleOffset=-1;
 static uint32_t g_menuReticleMask=0;
-static float g_menuSize = 1.1f, g_menuDistance = 1.5f;
+static float g_menuSize = 1.65f, g_menuDistance = 1.5f;
 static std::string g_menuResolution = "auto";
 static char g_menuStatus[96] = "HOLD Y FOR ONE SECOND TO OPEN";
 static int g_menuPage = 0, g_menuRow = 0, g_menuGunHand = 1;
@@ -79,7 +79,7 @@ static const MenuItem kMenuGraphics[] = {
 static const MenuItem kMenuCalibration[] = {
     {MRecenter,"RECENTER VIEW","LOOK FORWARD. STAND UP TO RESET CROUCH HEIGHT"},
     {MGunPage,"GUN ALIGNMENT","INDEPENDENT LEFT AND RIGHT GUN OFFSETS"},
-    {MSize,"MENU WIDTH","METRES; DEFAULT 1.10"},
+    {MSize,"MENU WIDTH","METRES; DEFAULT 1.65"},
     {MDistance,"MENU DISTANCE","METRES; DEFAULT 1.50"},
     {MDefaults,"RESTORE SHIPPED DEFAULTS","REQUIRES CONFIRMATION. RESETS YOUR MEVR SETTINGS"},
     {MBack,"BACK","RETURN TO THE MAIN SETTINGS PAGE"}
@@ -174,7 +174,7 @@ static bool VrMenuLoadSetting(const char* key,const char* val) {
     }
     if(_stricmp(key,"MenuWidth")==0 || _stricmp(key,"MenuDistance")==0) {
         const bool width=_stricmp(key,"MenuWidth")==0;
-        if(MenuParseNumber(val,width?.7f:.8f,width?1.6f:2.5f,&v)) {
+        if(MenuParseNumber(val,width?.7f:.8f,width?2.0f:2.5f,&v)) {
             (width?g_menuSize:g_menuDistance)=v;return true;
         }
         return false;
@@ -373,9 +373,9 @@ static void MenuRestoreDefaults() {
     g_motionHands=true;g_menuArm=false;g_menuGuns=g_menuMelee=g_menuParkour=true;
     g_armSwingCrouch=g_balanceRoll=true;
     MenuAnimPreference(0)=MenuAnimPreference(1)=MenuAnimPreference(2)=true;
-    g_fpsCap=60;g_menuResolution="auto";g_menuLens=false;g_menuEx=false;g_fastCapture=false;
+    g_fpsCap=60;g_menuResolution="1280x720";g_menuLens=false;g_menuEx=false;g_fastCapture=false;
     g_debug=false;g_overlay=true;g_motionHandsDebug=g_armSwingDebug=g_parkourDebug=false;
-    g_menuSize=1.1f;g_menuDistance=1.5f;g_menuFps=false;
+    g_menuSize=1.65f;g_menuDistance=1.5f;g_menuFps=false;
     g_controllerMode=0;g_snapTurning=false;g_smoothTurnSpeed=1;g_snapTurnAngle=45;
     g_gameUiScale=.65f;g_gameUiHeight=0;
     g_wxrFov=0.0f;g_wxrFovV=0.0f;g_gameFov=105.0f;g_rollSign=0;
@@ -416,7 +416,10 @@ static void MenuActivate(MenuId id,int delta) {
         case MParkour:g_menuParkour=choose(g_menuParkour);break;
         case MCrouch:g_armSwingCrouch=choose(g_armSwingCrouch);break;
         case MBalance:g_balanceRoll=choose(g_balanceRoll);break;
-        case MHeadRoll:g_rollSign=g_rollSign==1?-1:g_rollSign==-1?0:1;break;
+        case MHeadRoll:
+            g_rollSign=g_rollSign==1?-1:g_rollSign==-1?0:1;
+            Log("[menu] HEAD ROLL -> %s",g_rollSign==1?"NORMAL":g_rollSign==-1?"INVERTED":"OFF");
+            break;
         case MPitch:MenuAnimPreference(0)=!choose(!MenuAnimPreference(0));break;
         case MRoll:MenuAnimPreference(1)=!choose(!MenuAnimPreference(1));break;
         case MYaw:MenuAnimPreference(2)=!choose(!MenuAnimPreference(2));break;
@@ -445,7 +448,7 @@ static void MenuActivate(MenuId id,int delta) {
         case MFast:g_fastCapture=choose(g_fastCapture);break;
         case MDebug:g_debug=choose(g_debug&&g_overlay);g_overlay=g_debug;break;
         case MLogging:g_motionHandsDebug=g_armSwingDebug=g_parkourDebug=choose(g_motionHandsDebug||g_armSwingDebug||g_parkourDebug);break;
-        case MSize:g_menuSize=(std::max)(.7f,(std::min)(1.6f,g_menuSize+delta*.1f));break;
+        case MSize:g_menuSize=(std::max)(.7f,(std::min)(2.0f,g_menuSize+delta*.1f));break;
         case MDistance:g_menuDistance=(std::max)(.8f,(std::min)(2.5f,g_menuDistance+delta*.1f));break;
         case MGunDown:case MGunRight:case MGunF:case MGunR:case MGunU: {
             int* value=id==MGunDown?&g_gunWristDownDeg[g_menuGunHand]:id==MGunRight?&g_gunWristRightDeg[g_menuGunHand]:
@@ -462,7 +465,6 @@ static void MenuValue(MenuId id,char* out,size_t cap) {
         case MHands:b=g_motionHands;break;case MArm:b=g_menuArm;break;
         case MGuns:b=g_menuGuns;break;case MMelee:b=g_menuMelee;break;case MParkour:b=g_menuParkour;break;
         case MCrouch:b=g_armSwingCrouch;break;case MBalance:b=g_balanceRoll;break;
-        case MHeadRoll:boolean=false;word=g_rollSign==1?"NORMAL":g_rollSign==-1?"INVERTED":"OFF";break;
         case MReticle:b=g_showReticle;break;
         case MPitch:b=!MenuAnimPreference(0);break;case MRoll:b=!MenuAnimPreference(1);break;case MYaw:b=!MenuAnimPreference(2);break;
         case MLens:b=g_menuLens;break;case MFps:b=g_menuFps;break;case MEx:b=g_menuEx;break;case MFast:b=g_fastCapture;break;
@@ -479,6 +481,7 @@ static void MenuValue(MenuId id,char* out,size_t cap) {
         case MUiHeight:sprintf_s(out,cap,"%+.0f%%",g_gameUiHeight*100.);break;
         case MFpsCap:if(g_fpsCap==0)word=g_menuUnlimitedFailed?"UNAVAILABLE":"UNLIMITED";else sprintf_s(out,cap,"%.0f",(double)g_fpsCap);break;
         case MResolution:word=g_menuResolution.c_str();break;
+        case MHeadRoll:word=g_rollSign==1?"NORMAL":g_rollSign==-1?"INVERTED":"OFF";break;
         case MFovH:if(g_wxrFov<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_wxrFov);break;
         case MFovV:if(g_wxrFovV<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_wxrFovV);break;
         case MGameFov:if(g_gameFov<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_gameFov);break;
@@ -553,7 +556,11 @@ static bool VrMenuInputTick(XrTime, bool focused,bool y,bool a,bool b,bool other
 static XrSwapchain g_menuSwap=XR_NULL_HANDLE;
 static std::vector<ID3D11Texture2D*> g_menuImages;
 static ID3D11Texture2D* g_menuUpload=nullptr;
-static const int kMenuW=1200,kMenuH=1000;
+// 1.5x the old 1200x1000 raster with a 2x font scale: the panel is drawn 1.5x
+// larger physically and the text is twice the old physical size.
+static const int kMenuW=1800,kMenuH=1500;
+static const float kMenuScale=1.5f;
+static int MenuPx(int v){return (int)(v*kMenuScale+0.5f);}
 static std::vector<uint32_t> g_menuPixels;
 static std::string g_menuLastImage;
 static void MenuRect(int x,int y,int w,int h,uint32_t colour) {
@@ -593,29 +600,31 @@ static void MenuRasterize(int count,const MenuItem* items,const char values[][64
             static const char* titles[]={"MIRROR'S EDGE VR","HANDS AND MOVEMENT","COMFORT","GRAPHICS AND PERFORMANCE",
                 "CALIBRATION AND MENU","TROUBLESHOOTING","GUN ALIGNMENT","RESTORE DEFAULTS?","CONTROLLERS AND TURNING",
                 "FIELD OF VIEW"};
-            MenuText(40,40,titles[g_menuPage],5,green);MenuRect(40,98,1120,3,green);
+            MenuText(MenuPx(40),MenuPx(40),titles[g_menuPage],10,green);
+            MenuRect(MenuPx(40),MenuPx(98),MenuPx(1120),MenuPx(3),green);
             for(int i=0;i<count;++i) {
-                const int y=140+i*76;const bool selected=i==g_menuRow;
-                if(selected)MenuRect(28,y-16,1144,68,green);
+                const int y=MenuPx(140+i*76);const bool selected=i==g_menuRow;
+                if(selected)MenuRect(MenuPx(28),y-MenuPx(16),MenuPx(1144),MenuPx(68),green);
                 const uint32_t ink=selected?black:MenuBlockedItem(items[i].id)?dim:green;
-                MenuText(48,y,items[i].label,4,ink);
-                MenuText(1144-(int)strlen(values[i])*24,y,values[i],4,ink);
+                MenuText(MenuPx(48),y,items[i].label,8,ink);
+                MenuText(MenuPx(1144)-(int)strlen(values[i])*48,y,values[i],8,ink);
                 // The three independent FOV controls get a real slider bar: track,
                 // filled portion and knob. 0/auto sits at the left end.
                 const MenuId rowId=items[i].id;
                 if(rowId==MFovH || rowId==MFovV || rowId==MGameFov) {
                     const float v=rowId==MFovH?g_wxrFov:rowId==MFovV?g_wxrFovV:g_gameFov;
-                    const int bx=640,bw=340,by=y+42;
-                    MenuRect(bx,by,bw,4,selected?black:dim);
+                    const int bx=MenuPx(480),bw=MenuPx(400),by=y+MenuPx(42);
+                    MenuRect(bx,by,bw,MenuPx(4),selected?black:dim);
                     float f=(v<=0.0f)?0.0f:(v-60.0f)/60.0f;
                     if(f<0.0f)f=0.0f;if(f>1.0f)f=1.0f;
                     const int fw=(int)(f*(float)bw);
-                    MenuRect(bx,by-2,fw,8,ink);
-                    MenuRect(bx+(fw>6?fw-6:0),by-6,10,16,ink);
+                    MenuRect(bx,by-MenuPx(2),fw,MenuPx(8),ink);
+                    MenuRect(bx+(fw>MenuPx(6)?fw-MenuPx(6):0),by-MenuPx(6),MenuPx(10),MenuPx(16),ink);
                 }
             }
-            MenuRect(40,747,1120,2,green);
-            // Wrap help at a word boundary; three-pixel glyphs fit 62 characters.
+            MenuRect(MenuPx(40),MenuPx(747),MenuPx(1120),MenuPx(2),green);
+            // Wrap help at a word boundary; six-pixel glyphs fit about 46
+            // characters across the larger 1800-wide raster.
             const MenuId selectedId=items[g_menuRow].id;
             std::string help=items[g_menuRow].help;
             if(MenuBlockedItem(selectedId)) {
@@ -624,12 +633,12 @@ static void MenuRasterize(int count,const MenuItem* items,const char values[][64
                 else if(g_standardControllerActive&&selectedId!=MFast)help="MOTION FEATURES RESUME WHEN YOU SWITCH BACK TO QUEST.";
                 else help="INACTIVE: ENABLE THE PARENT FEATURE FIRST. YOUR CHOICE IS REMEMBERED.";
             }
-            size_t split=help.size()>61?help.rfind(' ',61):std::string::npos;
-            if(split!=std::string::npos){MenuText(40,774,help.substr(0,split).c_str(),3,green);MenuText(40,805,help.substr(split+1).c_str(),3,green);}
-            else MenuText(40,774,help.c_str(),3,green);
-            MenuText(40,861,g_menuStatus,2,green);
-            MenuText(40,909,"STICK: SELECT / ADJUST   A / TRIGGER: CONFIRM",3,green);
-            MenuText(40,949,"B: BACK   HOLD Y: CLOSE",3,green);MenuText(960,949,fpsText,3,green);
+            size_t split=help.size()>46?help.rfind(' ',46):std::string::npos;
+            if(split!=std::string::npos){MenuText(MenuPx(40),MenuPx(774),help.substr(0,split).c_str(),6,green);MenuText(MenuPx(40),MenuPx(805),help.substr(split+1).c_str(),6,green);}
+            else MenuText(MenuPx(40),MenuPx(774),help.c_str(),6,green);
+            MenuText(MenuPx(40),MenuPx(861),g_menuStatus,4,green);
+            MenuText(MenuPx(40),MenuPx(909),"STICK: SELECT / ADJUST   A / TRIGGER: CONFIRM",6,green);
+            MenuText(MenuPx(40),MenuPx(949),"B: BACK   HOLD Y: CLOSE",6,green);MenuText(MenuPx(960),MenuPx(949),fpsText,6,green);
         } else MenuText(20,20,fpsText,5,green);
 }
 // Once per frame: counts the frame rate and says whether the panel or the FPS readout is up.

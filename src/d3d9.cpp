@@ -23697,6 +23697,12 @@ static void ApplyYawFix(float* m, bool rowStorage)
 
 static void ApplyRoll(float* m, bool rowStorage)
 {
+    static int loggedSign = 99;
+    if (g_rollSign != loggedSign) {
+        loggedSign = g_rollSign;
+        Log("[roll] injection sign %+d, head roll %.2f deg, enabled %d",
+            g_rollSign, g_headRoll * 57.29578f, g_rollEnabled ? 1 : 0);
+    }
     if (!g_rollEnabled || g_rollSign == 0 || fabsf(g_headRoll) < 1e-4f) return;
     if (g_targetHalfFovX <= 0.0f || g_targetHalfFovY <= 0.0f) return;
 

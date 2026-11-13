@@ -48,12 +48,12 @@ if (-not (Test-Path -LiteralPath $OverlayDirectory)) {
 }
 
 # The three install files plus the game/config files the tweak tool touched.
-Expect-File 'Binaries\d3d9.dll' '0F9186B5724733041F7348543D70AA7148369C4B6396DC6AE778CDD70AD9B2FC'
-Expect-File 'Binaries\mevr.ini' '555462EB99D8A03D187C4D1AB7FD3289985F822CFF87A046600C25DEA158F99D'
-Expect-File 'Binaries\mevr-TdEngine.ini' '3D09EE770B32728C4A4E3B848AF032AAAC685A15149218752DA0E5F02E3CF419'
+Expect-File 'Binaries\d3d9.dll' 'DEF690ACBB0B0F53270EEA90D3C2CC04BDD6A10C6EBFD66D768B518067C47E89'
+Expect-File 'Binaries\mevr.ini' 'C8290CA58FB6C1D8B2A5A5E8A24E63B50FA76EC638D3FFE41979D969C560D2C3'
+Expect-File 'Binaries\mevr-TdEngine.ini' '1FB7324D1290EE9166E15565D29F2AF37173286E1C17E80E7415D9FD180F7BB0'
 Expect-File 'Binaries\MirrorsEdge.exe' 'EC0907678EA3F7DDD48950C0F9346D04EF6F8A6040227C1FFCD3CBCEF9E27C33'
 Expect-File 'Binaries\PhysXCore.dll' $null
-Expect-File 'Fallback\d3d9-mt.dll' 'B1CB33BFF73FAE9BA47F129B78BDCAFFDCA0CBDEF8C3747B71A95D25957D1B7E'
+Expect-File 'Fallback\d3d9-mt.dll' '29D264B3E3343D4C290F5FFB4709BDB8F377E308919820F5AD69E809B2F53FEB'
 Expect-File 'TdGame\Config\DefaultHudEffects.ini' '40A4E4E7A04865BC12E46CF5B082F09D7E884D88B1236542F2993F495CB9917B'
 Expect-File 'TdGame\CookedPC\Engine.u' '8C8A4C79FCFFCCC4882D27FFE522BC299B67D423595B921E0FAC518EF5B8E7FB'
 Expect-File 'TdGame\CookedPC\TdGame.u' 'AF4A5ADA7972E949DF1F0C6588617143C86B8EF027F7FBC206ECFF1AD97B0524'
@@ -67,7 +67,7 @@ if (Test-Path -LiteralPath (Join-Path $OverlayDirectory 'Binaries\OpenAL32.dll')
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrGraphics\s*=\s*quest\s*$' 'WinlatorXrGraphics = quest'
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrInstallConfig\s*=\s*on\s*$' 'WinlatorXrInstallConfig = on'
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrStereo\s*=\s*mono\s*$' 'WinlatorXrStereo = mono'
-Expect-Text 'Binaries\mevr.ini' '(?m)^\s*Resolution\s*=\s*auto\s*$' 'Resolution = auto'
+Expect-Text 'Binaries\mevr.ini' '(?m)^\s*Resolution\s*=\s*1280x720\s*$' 'Resolution = 1280x720'
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*FrameCap\s*=\s*60\s*$' 'FrameCap = 60'
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*HeadRollSign\s*=\s*0\s*$' 'HeadRollSign = 0'
 Expect-Text 'Binaries\mevr.ini' '(?m)^\s*WinlatorXrFov\s*=\s*0\s*$' 'WinlatorXrFov = 0'
@@ -77,8 +77,8 @@ Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*DynamicShadows\s*=\s*False\s*$
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*LightEnvironmentShadows\s*=\s*False\s*$' 'LightEnvironmentShadows=False'
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*Distortion\s*=\s*False\s*$' 'Distortion=False'
 Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*DepthOfField\s*=\s*False\s*$' 'DepthOfField=False'
-Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*ResX\s*=\s*1920\s*$' 'ResX=1920'
-Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*ResY\s*=\s*1080\s*$' 'ResY=1080'
+Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*ResX\s*=\s*1280\s*$' 'ResX=1280'
+Expect-Text 'Binaries\mevr-TdEngine.ini' '(?m)^\s*ResY\s*=\s*720\s*$' 'ResY=720'
 if ((Get-Content -LiteralPath (Join-Path $OverlayDirectory 'Binaries\mevr-TdEngine.ini') -Raw) -match '(?m)^\[AppCompat\]') {
     $warn.Add('mevr-TdEngine.ini still contains [AppCompat]; desktop CPU/GPU scores may leak into the headset')
 }

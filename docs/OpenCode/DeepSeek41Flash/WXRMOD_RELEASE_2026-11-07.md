@@ -33,13 +33,12 @@ All changes are in `src/d3d9.cpp`.
    auto-arm path skips stereo, `AdoptLocatedViews` still supplies the forced
    FOV, and Auto resolution uses the full screen size rather than a doubled
    eye width. AER and SBS remain selectable.
-6. **Resolution = auto on the WXR build:** mono queries the WinlatorXR
-   container desktop directly in `LoadSettings()` and uses it as the frame
-   size, so the first launch already gets the container maximum. The bundled
-   `TdEngine.ini` keeps 1920x1080 as a fallback, and `SyncEngineResolution()`
-   rewrites `ResX/ResY` to the auto size. The Resolution menu row is hidden in
-   the WXR build. A 1280x720 selection is not overwritten by the
-   bundled pin.
+6. **Resolution on the WXR build:** the default is `1280x720`, and the bundled
+   `TdEngine.ini` pins `ResX=1280` / `ResY=720`. `Resolution = auto` remains
+   available: for mono it queries the WinlatorXR container desktop directly in
+   `LoadSettings()` and uses the maximum size on the first launch.
+   `SyncEngineResolution()` rewrites `ResX/ResY` to whatever is selected. The
+   Resolution menu row is hidden in the WXR build.
 7. **DllMain order:** install config, re-apply resolution, enforce graphics.
 8. **Input policy:** ESC is never blocked. Mouse messages and DirectInput
    mouse state pass while the game is in a menu/2D state (`g_wxrFlat`) or the
@@ -102,7 +101,12 @@ All changes are in `src/d3d9.cpp`.
     `ParkourDebug` are off in the code defaults and the shipped `mevr.ini`.
     The Troubleshooting row can enable them for a diagnostic run; they write a
     very large log.
-18. **OpenXR/OpenVR stripped from the WinlatorXR build as far as the shared
+18. **VR menu scaled for 1280x720:** the raster is 1800x1500 (1.5x the old
+    1200x1000), `MenuWidth` defaults to 1.65 m (1.5x), and the font scales are
+    doubled. That makes the panel 1.5x larger physically and the text 2x the
+    old physical size, which restores readability at the lower render
+    resolution.
+19. **OpenXR/OpenVR stripped from the WinlatorXR build as far as the shared
     code allows:** `xr_diagnostics.inl` (OpenXR loader/layer/reflection
    diagnostics) is excluded, the instance is created with zero extensions, and
    `XrDetailedLogging` is desktop-only. The remaining OpenXR headers are
@@ -123,7 +127,7 @@ guarantee that an old user config cannot re-enable the expensive passes.
 ```
 Binaries\
   d3d9.dll            WinlatorXR build, x86, no openxr_loader/d3d11/dxgi imports
-  mevr.ini            1920x1080, mono, WinlatorXrGraphics=quest, InstallConfig=on
+  mevr.ini            1280x720, mono, WinlatorXrGraphics=quest, InstallConfig=on
   mevr-TdEngine.ini   performance config installed into Documents by the mod
   MirrorsEdge.exe     tweak-tool patched exe (GOG)
   PhysXCore.dll       copy of PhysXCore.bak
@@ -142,16 +146,16 @@ Key hashes:
 
 | File | SHA-256 |
 |---|---|
-| `d3d9.dll` | `0F9186B5724733041F7348543D70AA7148369C4B6396DC6AE778CDD70AD9B2FC` |
-| `mevr.ini` | `555462EB99D8A03D187C4D1AB7FD3289985F822CFF87A046600C25DEA158F99D` |
-| `mevr-TdEngine.ini` | `3D09EE770B32728C4A4E3B848AF032AAAC685A15149218752DA0E5F02E3CF419` |
+| `d3d9.dll` | `DEF690ACBB0B0F53270EEA90D3C2CC04BDD6A10C6EBFD66D768B518067C47E89` |
+| `mevr.ini` | `C8290CA58FB6C1D8B2A5A5E8A24E63B50FA76EC638D3FFE41979D969C560D2C3` |
+| `mevr-TdEngine.ini` | `1FB7324D1290EE9166E15565D29F2AF37173286E1C17E80E7415D9FD180F7BB0` |
 | `MirrorsEdge.exe` | `EC0907678EA3F7DDD48950C0F9346D04EF6F8A6040227C1FFCD3CBCEF9E27C33` |
 | `DefaultHudEffects.ini` | `40A4E4E7A04865BC12E46CF5B082F09D7E884D88B1236542F2993F495CB9917B` |
 | `Engine.u` | `8C8A4C79FCFFCCC4882D27FFE522BC299B67D423595B921E0FAC518EF5B8E7FB` |
 | `TdGame.u` | `AF4A5ADA7972E949DF1F0C6588617143C86B8EF027F7FBC206ECFF1AD97B0524` |
 | `Ts_LOC_int.upk` | `3448981058D0469E9BC5BA1AF475B810F9A4A0AC3424617DDF77B2A71DB5145B` |
 
-Build identity: `924C4162D4996E56FF4712645DEACC2C2338C8DE63038C6DE529070AF11C8F87`.
+Build identity: `1586CE5F864351F197FE054F9C181F5A7C39750DE2182F0C53F7256E06B81038`.
 
 ## Build and verification
 
@@ -162,7 +166,7 @@ Build identity: `924C4162D4996E56FF4712645DEACC2C2338C8DE63038C6DE529070AF11C8F8
   `VCRUNTIME140`, UCRT. The x86 VC++ 2015–2022 runtime is required.
 - `Fallback\d3d9-mt.dll` is the same source rebuilt `/O2 /MT` and imports only
   `USER32`, `ADVAPI32`, `WS2_32`, `KERNEL32`; use it if the dynamic runtime is
-  missing (`B1CB33BF...`).
+  missing (`29D264B3...`).
 - The desktop flavour was compile-checked (`/c`) to ensure the
   `FindTdEngineIniCandidate` refactor did not break it.
 - `tools/check-wxrmod-overlay.ps1` validates the overlay hashes, required
@@ -177,8 +181,8 @@ Build identity: `924C4162D4996E56FF4712645DEACC2C2338C8DE63038C6DE529070AF11C8F8
 - The installer overwrites the user `TdEngine.ini` on every launch. That is the
   intended "performance is king" behavior; `WinlatorXrInstallConfig = off`
   stops it, and the original is kept once as `.mevr-backup`.
-- The release sets `Resolution = auto` (container desktop maximum),
-  `FrameCap = 60` and `WinlatorXrStereo = mono`.
+- The release sets `Resolution = 1280x720`, `FrameCap = 60` and
+  `WinlatorXrStereo = mono`.
   Mono VR is implemented in this build; AER and SBS remain selectable with
   `WinlatorXrStereo = aer|sbs`.
 - The patched `MirrorsEdge.exe` is from the GOG copy. Do not mix it with Steam
@@ -242,14 +246,14 @@ steps in `Release/WXRMOD/README.txt` are the test.
 ## Next checks
 
 1. Install the overlay in the Quest game folder, with the container screen at
-   1920x1080 for mono. Launch once,
+   1280x720 for mono. Launch once,
    quit, relaunch so the installed config is read. In `mevr.log`, confirm
    `[wxr] config: installed bundled TdEngine.ini`,
    `[wxr] graphics: Quest performance profile`,
    `[cfg] WinlatorXrInstallConfig = on`, and `[cfg] WinlatorXrStereo = mono`.
-2. Confirm the 1920x1080 image is not white-screened and the game reaches
+2. Confirm the 1280x720 image is not white-screened and the game reaches
    gameplay. If it fails, restore the untouched exe/config pair first.
 3. Compare fps and chapter-load time against the previous AER build.
-4. Compare mono at 1920x1080 against `WinlatorXrStereo = aer` and `sbs` at
+4. Compare mono at 1280x720 against `WinlatorXrStereo = aer` and `sbs` at
    the same resolution. If mono is stable but the image is too soft, raise
    Resolution or test AER.
