@@ -465,12 +465,18 @@ static bool WxrDrawVirtualScreen(IDirect3DDevice9* dev, IDirect3DSurface9* bb, c
 //
 // Menus, the pause screen, cutscenes and scripted cameras go to the 2D screen; stereo is only for
 // the player's own view. Not in control: no player pawn, the camera's view target is not the
-// pawn (cutscenes use a CameraActor), or the game has stayed paused (not by the VR panel).
+// pawn (cutscenes use a CameraActor), the game is holding the look input (bCinematicMode,
+// bCinemaDisableInputLook, or a scripted walk), or the game has stayed paused (not by the VR
+// panel).
 //
-// bCinematicMode is deliberately NOT a reason: the tutorial toggles it during ordinary play and
-// the headset flashed into 2D for a second or two at a time. First-person scripted moments keep
-// the player's own view, which is comfortable in stereo. A pause must also last a moment, so a
-// brief engine pause does not flash the screen either.
+// The look lock is why cutscenes belong on the 2D screen: head tracking cannot move a camera the
+// script owns, so leaving them in VR reads as being strapped to a tripod. That check is the same
+// one the head-look injection uses, and it is subject to a short settle - bCinematicMode is
+// toggled briefly during ordinary play, and flashing 2D for a frame or two is worse than the
+// second of locked look it would avoid.
+//
+// bCinematicMode alone is deliberately NOT immediate for the same reason. A pause must also last
+// a moment, so a brief engine pause does not flash the screen either.
 static const char* WxrNotInControlReason()
 {
     if (!g_playerCtl || !g_playerPawn) return "no player pawn";
@@ -482,6 +488,35 @@ static const char* WxrNotInControlReason()
         if (SafeU32(g_playerCtl + g_offCtlCamera, &cam) && cam >= 0x10000 &&
             SafeU32(cam + g_offCamViewTarget, &target) && target >= 0x10000 &&
             target != (uint32_t)g_playerPawn) return "camera on a cutscene or scripted view";
+    }
+    // The camera is the pawn's, but the script owns it: the same condition the head-look
+    // injection stands down under. Long enough to skip the tutorial's one-frame toggles,
+    // short enough that a cutscene reaches the 2D screen before the first shot settles.
+    static int cinematicRun = 0;
+    cinematicRun = CinematicHeadLookRequested() ? cinematicRun + 1 : 0;
+    if (cinematicRun > 45) return "cutscene: look input is locked";
+    // Geometric fallback, adopted from TWFC-VR's UE3 mod: a scripted camera can walk away from
+    // the pawn without ever setting bCinematicMode or bCinemaDisableInputLook, so the flag test
+    // alone misses those moments. Their rule, kept as-is: further than 1500 UU from the pawn for
+    // a few frames, and stay flat until it comes back under 1000. Both are UE3 units, so they
+    // mean the same 15 m and 10 m here as they did there.
+    static int  farRun = 0;
+    static bool farLatch = false;
+    if (g_offActorLocation >= 0 && g_playerPawn) {
+        float camLoc[3], fwd[3];
+        MEVR_Vec3 pawnLoc{};
+        if (GetCameraPose(camLoc, fwd) &&
+            SafeRead(g_playerPawn + g_offActorLocation, &pawnLoc, sizeof(pawnLoc))) {
+            const float dx = pawnLoc.x - camLoc[0];
+            const float dy = pawnLoc.y - camLoc[1];
+            const float dz = pawnLoc.z - camLoc[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > 1500.0f * 1500.0f) { if (farRun < 1000) ++farRun; }
+            else farRun = 0;
+            if (farRun >= 3) farLatch = true;
+            if (farLatch && d2 < 1000.0f * 1000.0f) farLatch = false;
+            if (farLatch) return "scripted camera away from the player";
+        }
     }
     return nullptr;
 }

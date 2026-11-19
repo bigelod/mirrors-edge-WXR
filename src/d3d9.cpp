@@ -208,6 +208,13 @@ extern bool g_wxrMono;
 // Resolution = WxH from mevr.ini; 0 = leave alone. Declared before the
 // WinlatorXR .inl includes so their startup diagnostics can read it.
 static UINT g_forceResW = 0, g_forceResH = 0;
+// ProbeProps = on: walk the script classes once and name clip/distance properties (diagnostic).
+static bool g_probeProps = false;
+// DetailMode for the performance profile: 0-3, the game's own scale. 1 culls every actor whose
+// DetailMode property is above it, which is the nearest thing UE3 has to a view-distance knob;
+// 2 is what the game ships. Declared here because the profile writer runs before the census
+// globals are defined.
+static int  g_detailMode = 2;
 static bool g_wxrBlockKeyboardMouse = true;   // WinlatorXrKeyboardMouse = off (default): gamepad only
 // Set by WxrSubmitFrame for a 2D-screen frame whose aspect differs from the pinned window: Present
 // then shows the backbuffer 1:1 centred with black bars, instead of stretched over the window.
@@ -869,16 +876,27 @@ static void WxrApplyQuestGraphics()
         { "DynamicShadows", "False" }, { "LightEnvironmentShadows", "False" },
         { "MotionBlur", "False" }, { "DepthOfField", "False" }, { "AmbientOcclusion", "False" },
         { "Distortion", "False" }, { "LensFlares", "False" },
-        { "DetailMode", "1" }, { "MaxShadowResolution", "512" }, { "MaxAnisotropy", "0" },
+        // DetailMode decides which actors are eligible to draw at all (an actor whose
+        // DetailMode property is above this is culled before it reaches D3D), which makes it
+        // the closest thing UE3 has to a view-distance lever. It is a mevr.ini setting rather
+        // than a constant so the draw-call effect can be measured: set DetailMode = 1 and
+        // compare "[layer] 1920x1080 indexed ... draws" between runs.
+        // 1 boots on the device (measured 2026-11-16); 2 is what the game itself ships.
+        { "DetailMode", "" }, { "MaxShadowResolution", "512" }, { "MaxAnisotropy", "0" },
         { "SkeletalMeshLODBias", "0" }, { "ParticleLODBias", "0" }, { "UseVsync", "False" },
         { "DynamicLights", "True" }, { "CompositeDynamicLights", "False" }, { "DynamicDecals", "True" },
         { "StaticDecals", "True" }, { "FogVolumes", "False" }, { "DirectionalLightmaps", "True" },
         { "QualityBloom", "False" }, { "Bloom", "False" }, { "FoliageDrawRadiusMultiplier", "0.000000" },
-        { "MaxMultisamples", "1" }, { "EnableHighPolyChars", "False" }, { "TdSunHaze", "False" },
+        // 0 rather than 1: both mean "no multisampling" to UE3, but 0 is the explicit value and
+        // it is the one the boot test used. The profile shipped 1 for months without ever being
+        // read by the engine, so nothing about 1 was ever exercised.
+        { "MaxMultisamples", "0" }, { "EnableHighPolyChars", "False" }, { "TdSunHaze", "False" },
         { "TdTonemapping", "False" }, { "TdBicubicFiltering", "False" }, { "PhysXEnhanced", "False" },
         { "ScreenPercentage", "100.000000" },
     };
     const int kCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
+    char detailText[8];
+    sprintf_s(detailText, "%d", g_detailMode);
     wchar_t path[MAX_PATH];
     if (!FindTdEngineIni(path, MAX_PATH)) { Log("[wxr] graphics: TdEngine.ini not found yet - applied from the next launch"); return; }
     HANDLE h1 = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -909,7 +927,9 @@ static void WxrApplyQuestGraphics()
                 const size_t keyLen = strlen(kKeys[k][0]);
                 if (line.size() > keyLen && line.compare(0, keyLen, kKeys[k][0]) == 0 && line[keyLen] == '=') {
                     ++found;
-                    const std::string want = std::string(kKeys[k][0]) + "=" + kKeys[k][1];
+                    const char* value = strcmp(kKeys[k][0], "DetailMode") == 0
+                                      ? detailText : kKeys[k][1];
+                    const std::string want = std::string(kKeys[k][0]) + "=" + value;
                     if (line != want) ++changed;
                     out += want;
                     replaced = true;
@@ -934,6 +954,30 @@ static void WxrApplyQuestGraphics()
     CloseHandle(h2);
     Log("*** [wxr] graphics: Quest performance profile %s - %d of %d keys changed ("
         " shadows/DoF/AO/bloom/flares/fog/distortion off)", ok ? "written" : "write FAILED", changed, kCount);
+}
+
+// ---- when the profile actually reaches the engine ----
+//
+// The engine reads TdEngine.ini during its own startup, long before this DLL is loaded, and then
+// writes its in-memory copy back over the file a few seconds later. A write from DllMain is
+// therefore both too late to change THIS run and erased before the next one; measured on
+// 2026-11-16, every run ended with DynamicShadows=True, DetailMode=2 and MaxMultisamples=4 in the
+// file while the bundled copy said False/1/1, and the 2048x2048 shadow pass ran at full
+// resolution because of it.
+//
+// The cure is to write again AFTER that startup save. The file on disk is then ours when the next
+// launch reads it, and the engine's own save that follows writes our values straight back, so the
+// profile sticks from the second launch onward. Every call compares before writing, so the
+// repeated invocations from Present cost a read and no log unless something actually changed.
+static void WxrApplyConfigNow(const char* why)
+{
+    WxrInstallBundledConfig();
+    if (g_forceResW && g_forceResH) {
+        char what[256] = "";
+        const bool ok = SyncEngineResolution(g_forceResW, g_forceResH, what, sizeof(what));
+        Log("[wxr] config (%s): resolution %s%s", why, what, ok ? "" : "  (*** mismatch)");
+    }
+    WxrApplyQuestGraphics();
 }
 #endif
 
@@ -9393,6 +9437,89 @@ struct RtSeen { IDirect3DSurface9* surf; UINT w, h; D3DFORMAT fmt; long draws; l
 extern std::deque<RtSeen> g_rtSeen;
 extern int               g_rtSeenCount;
 
+// ================================================================ draw-stream layer census
+//
+// The layered renderer needs three separable groups of draws - world, first-person, HUD - and
+// this counts them by the only signals that already exist at draw time: the bound target, the
+// scene matrix on c0, and the entry point used. Nothing here changes a draw; it only decides
+// whether the split is visible in the stream at all before any pixels depend on it.
+//
+// `LayerTrace = on` in mevr.ini enables it. Default off: the lines are long and this is a tool,
+// not a feature.
+static bool g_layerTrace = false;
+static long g_layerOrdinal = 0;      // draws since the last depth clear of this frame
+static long g_layerDepthClears = 0;
+static long g_layerClearAt[8];       // draw ordinals at which a depth clear happened
+static int  g_layerClearCount = 0;
+
+struct LayerBucket {
+    UINT w, h;
+    int  entry;        // 0 indexed, 1 primitive, 2 indexedUP, 3 primitiveUP
+    int  flags;        // 1 = c0 carries the scene matrix, 2 = target is backbuffer-sized
+    long draws, prims;
+};
+static LayerBucket g_layerB[20];
+static int g_layerBCount = 0;
+
+// ---- the colourless depth-only pass ----
+//
+// The census found a square, colourless (D3DFMT_NULL) target taking ~14 draws and ~30k primitives
+// per frame. On the PC before the profile applied it was 2048x2048; on the device with
+// MaxShadowResolution=512 in effect it is 512x512, with the same draw and primitive counts per
+// frame - so it is the shadow depth pass, and its size follows that key even though the
+// DynamicShadows / LightEnvironmentShadows switches do not stop it.
+//
+// `SkipNullDepthPass = on` drops those draws: the target then stays at its clear value, which is
+// "nothing casts a shadow from this pass" rather than a corrupted frame - the same trade the
+// performance profile already makes for dynamic shadows. On by default; set it off to restore.
+//
+// The size gate is 256 rather than 1024 because the first device run at 1080p reported the pass at
+// 512x512 and the higher floor silently matched nothing. Anything that is square, colourless and
+// at least 256 is a depth-only scene target; the format test is what excludes everything else.
+static bool g_skipNullDepthPass = true;
+static long g_nullPassSkipped = 0;
+// MAKEFOURCC('N','U','L','L'). Not every SDK header defines D3DFMT_NULL, so name the value.
+static const D3DFORMAT kNullColourFormat = (D3DFORMAT)1280070990;
+
+// ---- TemporalSplit: submit half (or a third) of the world draws per frame, NES style ----
+//
+// The NES rotated through its sprite table because the hardware could not draw them all; the eye
+// integrated the flicker. Here each frame clears the scene target and draws depth-tested
+// geometry, so a skipped draw is a HOLE, not a missing sprite - the far side of the street shows
+// through where a wall should be. Alternating halves therefore strobes rather than shimmers, and
+// in a headset at 20 fps every object lands at 10 Hz.
+//
+// It is here to be measured, not to be shipped: the draw count halves, which is the real saving,
+// and a screenshot says whether the picture survives it. Applies to the world entry point only;
+// the HUD (user-pointer draws) is never split, because text flicker is the worst version of this.
+// TemporalSplit / DrawBudget: submit only one draw in N of the world draws.
+//
+// This exists as a MEASUREMENT, not a feature: it is the only way to ask "does draw submission
+// cost anything on this device" without being able to move the engine's frustum. Every Nth draw is
+// skipped, and the phase rotates each frame, so the loss is spread over geometry instead of
+// removing one object outright. On the PC it halves the census with no frame-rate change, which is
+// what a machine that is not draw-bound should do; on a Box64 device the same test says whether
+// draws are the wall.
+static int  g_temporalSplit = 0;          // 1 = every draw, N = one in N
+static long g_temporalOrdinal = 0;
+static long g_temporalFrame = -1;
+static long g_temporalSkipped = 0;
+static long g_temporalIssued = 0;
+
+
+
+static bool SkipTemporalDraw()
+{
+    if (g_temporalSplit <= 1) return false;
+    if (g_frames != g_temporalFrame) { g_temporalFrame = g_frames; g_temporalOrdinal = 0; }
+    if ((g_temporalOrdinal++ % g_temporalSplit) != (g_frames % g_temporalSplit)) {
+        ++g_temporalSkipped;
+        return true;
+    }
+    ++g_temporalIssued;
+    return false;
+}
+
 // ---- where the engine actually renders the scene, which is not always the backbuffer ----
 //
 // 0 means "not learned, use the backbuffer", and that is the state every working run has been
@@ -11488,6 +11615,54 @@ static bool ReadObjName(uintptr_t obj, char* out, size_t cap)
     if (!SafeU32(obj + g_offName, &ni)) return false;
     return NameOf(ni, out, cap);
 }
+
+// ---- script-property probe (diagnostic) ----
+//
+// Native property chains are stripped in this cook, but SCRIPT classes keep theirs - that is why
+// TdPlayerCamera::ViewTarget resolves while Actor::MaxDrawDistance does not. So if the engine's
+// far plane is exposed on a script class, it can be read and written with no disassembly at all.
+// This walks the interesting classes once and names anything clip/distance shaped.
+//
+// ProbeProps = on in mevr.ini. Diagnostic only: it logs and changes nothing.
+static void ProbeScriptProps()
+{
+    static const char* const kClasses[] = {
+        "TdPlayerCamera", "TdPlayerController", "TdGameViewportClient", "TdGameSceneClient",
+        "TdGameEngine", "TdHUD", "TdPlayerInput", "TdGameCamera",
+    };
+    for (const char* want : kClasses) {
+        const uintptr_t cls = FindClassByName(want);
+        if (!cls) { Log("[probe] class %s not found", want); continue; }
+        int walked = 0, shown = 0;
+        for (uintptr_t c = cls; c && walked < 4000; ) {
+            uint32_t head = 0;
+            if (SafeU32(c + g_offChildren, &head) && head >= 0x10000) {
+                for (uintptr_t p = head; p && walked < 4000; ) {
+                    char nm[96];
+                    if (!ReadObjName(p, nm, sizeof(nm))) break;
+                    ++walked;
+                    if (strstr(nm, "Clip") || strstr(nm, "Dist") || strstr(nm, "Draw") ||
+                        strstr(nm, "Cull") || strstr(nm, "Far") || strstr(nm, "Near")) {
+                        uint32_t off = 0;
+                        if (SafeU32(p + g_offPropOff, &off) && shown < 20) {
+                            Log("[probe]   %s::%s +0x%04X", want, nm, off);
+                            ++shown;
+                        }
+                    }
+                    uint32_t nxt = 0;
+                    if (!SafeU32(p + g_offNext, &nxt) || nxt < 0x10000) break;
+                    p = nxt;
+                }
+            }
+            uint32_t super = 0;
+            if (!SafeU32(c + 0x3C, &super) || super < 0x10000) break;
+            c = super;
+        }
+        Log("[probe] %s: %d fields walked, %d named", want, walked, shown);
+    }
+}
+
+static bool WriteRigBytes(uintptr_t address, const void* data, size_t size);  // defined below
 
 // Derive Children / Next / Offset against TdSwanNeck, whose real layout is already known.
 static bool DerivePropertyOffsets()
@@ -16522,6 +16697,8 @@ static bool CurrentViewTargetIsPawn(uintptr_t pawn)
     return SafeU32(g_playerCtl + g_offCtlCamera, &camera) && camera >= 0x10000 &&
            SafeU32(camera + g_offCamViewTarget, &target) && target == (uint32_t)pawn;
 }
+
+
 
 static volatile LONG g_viewTargetRetryRunning = 0;
 static volatile LONG g_motionInitRetryRunning = 0;
@@ -22238,6 +22415,7 @@ static HRESULT STDMETHODCALLTYPE Hook_SetVSConstF(IDirect3DDevice9* dev, UINT st
                 for (int i = 0; i < 4; ++i) { m[0 * 4 + i] *= sx; m[1 * 4 + i] *= sy; }
             }
         }
+
         // Same three, in the same order, as the duplication path's BuildEyeMatrix. Kept in step
         // deliberately: the two paths drifting apart is exactly how the FOV read ended up living
         // on only one of them, and that cost several runs to find.
@@ -22273,6 +22451,16 @@ static HRESULT STDMETHODCALLTYPE Hook_SetVSConstF(IDirect3DDevice9* dev, UINT st
             InterlockedIncrement(&g_vmPoseFailures);
         }
     }
+    // ---- our own distance cull: capture the object's origin ----
+    //
+    // UE3 uploads the object's LocalToWorld immediately before drawing it, four constants at a
+    // time. Its translation column is the object's origin, which is the only per-draw position
+    // this process can see: the native property chains that would give a component its bounds
+    // are stripped in this cook (see [cull] in the log).
+    //
+    // The scene view-projection lands in the same shape, so a matrix whose translation sits on
+    // the camera is not an object and is ignored. That is the whole test - cheap, and enough to
+    // keep the camera's own upload from being mistaken for an object at distance 0.
     return g_origSetVSConstF(dev, startReg, data, count);
 }
 
@@ -22672,6 +22860,15 @@ static HRESULT STDMETHODCALLTYPE Hook_Clear(IDirect3DDevice9* dev, DWORD rectCou
     const UINT w = g_rtCurrent ? g_rtCurrent->w : 0;
     const UINT h = g_rtCurrent ? g_rtCurrent->h : 0;
     const DWORD key = flags | (rectCount ? 0x80000000ul : 0ul);
+    // A depth-only clear part-way through a frame is the classic signature of a separate
+    // first-person pass: the viewmodel is drawn after the world with its own depth range.
+    // Recording the draw ordinal at which it happens makes that visible without a capture tool.
+    if (g_layerTrace && (flags & D3DCLEAR_ZBUFFER)) {
+        ++g_layerDepthClears;
+        if (g_layerClearCount < 8)
+            g_layerClearAt[g_layerClearCount++] = g_layerOrdinal;
+        g_layerOrdinal = 0;
+    }
     int slot = -1;
     for (int i = 0; i < g_clearBucketCount; ++i)
         if (g_clearBuckets[i].w == w && g_clearBuckets[i].h == h &&
@@ -24148,10 +24345,75 @@ static bool ShouldDuplicateWorldUP(IDirect3DDevice9* dev)
     return ShouldDuplicate();
 }
 
+static void NoteLayerDraw(UINT prims, int entry)
+{
+    if (!g_layerTrace) return;
+    const UINT w = g_rtCurrent ? g_rtCurrent->w : 0;
+    const UINT h = g_rtCurrent ? g_rtCurrent->h : 0;
+    const int flags = (g_c0IsScene ? 1 : 0) |
+                      ((g_capW && w == g_capW && h == g_capH) ? 2 : 0);
+    int slot = -1;
+    for (int i = 0; i < g_layerBCount; ++i)
+        if (g_layerB[i].w == w && g_layerB[i].h == h &&
+            g_layerB[i].entry == entry && g_layerB[i].flags == flags) { slot = i; break; }
+    if (slot < 0 && g_layerBCount < 20) {
+        slot = g_layerBCount++;
+        g_layerB[slot] = { w, h, entry, flags, 0, 0 };
+    }
+    if (slot >= 0) {
+        ++g_layerB[slot].draws;
+        g_layerB[slot].prims += (long)prims;
+    }
+    ++g_layerOrdinal;
+}
+
+static void ReportLayers()
+{
+    if (g_skipNullDepthPass)
+        Log("[layer] null-target depth draws skipped this window: %ld", g_nullPassSkipped);
+    if (g_temporalSplit > 1)
+        Log("[layer] draw budget 1/%d: %ld submitted, %ld skipped this window",
+            g_temporalSplit, g_temporalIssued, g_temporalSkipped);
+    g_nullPassSkipped = 0;
+    g_temporalIssued = g_temporalSkipped = 0;
+    if (!g_layerTrace) return;
+    static const char* const kEntry[] = { "indexed", "prim", "indexedUP", "primUP" };
+    Log("[layer] draws this window, by target / scene matrix / entry point:");
+    for (int i = 0; i < g_layerBCount; ++i) {
+        const LayerBucket& b = g_layerB[i];
+        Log("[layer]   %4ux%-4u %-9s c0scene=%d backbuffer=%d  %7ld draws %9ld prims",
+            b.w, b.h, kEntry[b.entry & 3],
+            (b.flags & 1) ? 1 : 0, (b.flags & 2) ? 1 : 0, b.draws, b.prims);
+        g_layerB[i].draws = 0;
+        g_layerB[i].prims = 0;
+    }
+    char ordinals[64] = "";
+    for (int i = 0; i < g_layerClearCount && i < 4; ++i) {
+        char part[20];
+        sprintf_s(part, "%s%ld", i ? ", " : "", g_layerClearAt[i]);
+        strcat_s(ordinals, part);
+    }
+    Log("[layer] depth-only clears this window: %ld; draw ordinals: %s",
+        g_layerDepthClears, ordinals[0] ? ordinals : "(none)");
+    g_layerDepthClears = 0;
+    g_layerClearCount = 0;
+}
+
+static bool SkipNullDepthDraw()
+{
+    if (!g_skipNullDepthPass || !g_rtCurrent) return false;
+    if (g_rtCurrent->fmt != kNullColourFormat) return false;
+    if (g_rtCurrent->w < 256 || g_rtCurrent->w != g_rtCurrent->h) return false;
+    ++g_nullPassSkipped;
+    return true;
+}
+
 static HRESULT STDMETHODCALLTYPE Hook_DrawPrimUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE type,
                                                  UINT primCount, const void* data, UINT stride)
 {
+    if (SkipNullDepthDraw()) return D3D_OK;
     NoteUpDraw(dev, primCount);
+    NoteLayerDraw(primCount, 3);
     SunDrawCapture sunCapture(dev,0,primCount);
     EffectPassCapture passCapture(dev, "PrimitiveUP", primCount);
     CaptureEffectDraw(dev,primCount,stride,data,primCount?(type>=D3DPT_TRIANGLELIST?3:1):0,"PrimitiveUP");
@@ -24179,7 +24441,9 @@ static HRESULT STDMETHODCALLTYPE Hook_DrawIndexedUP(IDirect3DDevice9* dev, D3DPR
                                                     const void* idx, D3DFORMAT idxFmt,
                                                     const void* verts, UINT stride)
 {
+    if (SkipNullDepthDraw()) return D3D_OK;
     NoteUpDraw(dev, primCount);
+    NoteLayerDraw(primCount, 2);
     CaptureSmokeIndexedUP(dev,type,minVertex,numVerts,primCount,idx,idxFmt,verts,stride);
     SunDrawCapture sunCapture(dev,1,primCount);
     EffectPassCapture passCapture(dev, "IndexedUP", primCount);
@@ -24225,6 +24489,8 @@ static void ReportUpDraws()
 static HRESULT STDMETHODCALLTYPE Hook_DrawPrim(IDirect3DDevice9* dev, D3DPRIMITIVETYPE type,
                                                UINT start, UINT count)
 {
+    if (SkipNullDepthDraw()) return D3D_OK;
+    NoteLayerDraw(count, 1);
     SunDrawCapture sunCapture(dev,2,count);
     EffectPassCapture passCapture(dev, "Primitive", count);
     CaptureEffectDraw(dev,count,0,nullptr,0,"Primitive");
@@ -24236,10 +24502,15 @@ static HRESULT STDMETHODCALLTYPE Hook_DrawPrim(IDirect3DDevice9* dev, D3DPRIMITI
     return DuplicateDraw(dev, [&] { return g_origDrawPrim(dev, type, start, count); });
 }
 
+
+
 static HRESULT STDMETHODCALLTYPE Hook_DrawIndexed(IDirect3DDevice9* dev, D3DPRIMITIVETYPE type,
                                                   INT baseVertex, UINT minIndex, UINT numVerts,
                                                   UINT startIndex, UINT primCount)
 {
+    if (SkipNullDepthDraw()) return D3D_OK;
+    if (SkipTemporalDraw()) return D3D_OK;
+    NoteLayerDraw(primCount, 0);
     SunDrawCapture sunCapture(dev,3,primCount);
     EffectPassCapture passCapture(dev, "Indexed", primCount);
     CaptureEffectDraw(dev,primCount,0,nullptr,numVerts,"Indexed");
@@ -27167,6 +27438,14 @@ static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT*
         g_frameSceneOffscreen = 0;
     }
 
+#if MEVR_WINLATORXR
+    // The engine rewrote TdEngine.ini during its own startup, after this DLL loaded, so the
+    // profile written from DllMain is already gone by now. Writing again here is what makes it
+    // survive to the NEXT launch; the first launch after a config change still runs the old one.
+    if (f == 900 || f == 2700 || f == 5400 || f == 9000)
+        WxrApplyConfigNow("late");
+#endif
+
     if ((f % 900) == 0) {
         ReportCameraAnimation();
         ReportMoveCensus();
@@ -27178,6 +27457,7 @@ static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT*
         ReportRenderTargets();
         ReportClears();
         ReportBlits();
+        ReportLayers();
         // Alongside the target census: if the engine ever falls back to half-size LDR buffers
         // again (run 14), the headroom trend here says whether VRAM pressure did it. Through
         // the ORIGINAL so the mod's own read does not appear as the game asking.
@@ -27201,6 +27481,8 @@ static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT*
     // sustained pattern anyway. Deliberately NOT inside the g_simulStereo report at 900 - the
     // whole point is to run while duplication is not happening.
     if ((f % 120) == 0) AdoptSceneTarget();
+    // One-shot script-property probe, late enough that discovery has finished.
+    if (g_probeProps && f == 600) ProbeScriptProps();
     // Arm the detailed sample for the NEXT frame, and report it the frame after. One frame of
     // per-draw state reads, not six hundred.
     if ((f % 600) == 0) { ReportUpDraws(); g_upSample = true; }
@@ -29419,16 +29701,10 @@ BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID)
 #if MEVR_WINLATORXR
         AddVectoredExceptionHandler(1, WxrFirstChance);
         WxrInstallInputBlock();
-        WxrInstallBundledConfig();
-        // The bundled file pins 1440x1080. If mevr.ini selected another
-        // explicit size (or Auto had a cached size), put that back after the
-        // install so the engine and the mod's forced mode agree.
-        if (g_forceResW && g_forceResH) {
-            char what[256] = "";
-            const bool resOk = SyncEngineResolution(g_forceResW, g_forceResH, what, sizeof(what));
-            Log("[wxr] config: resolution after install: %s%s", what, resOk ? "" : "  (*** mismatch)");
-        }
-        WxrApplyQuestGraphics();
+        // The bundled file pins 1440x1080. If mevr.ini selected another explicit size (or Auto
+        // had a cached size), put that back after the install so the engine and the mod's forced
+        // mode agree. The same call runs again later in the run - see WxrApplyConfigNow.
+        WxrApplyConfigNow("startup");
         WxrHookPureCall();
         LogAddressSpace("at load");
         // The emulator's settings decide whether the engine's threads see each other's writes in

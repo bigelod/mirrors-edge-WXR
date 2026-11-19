@@ -6,6 +6,8 @@ Full credit to letsgosportsteam for the original PCVR mod https://github.com/let
 
 Credit also to SgtBilko76 for his work on a XrAPI conversion https://github.com/SgtBilko76/mirrors-edge-vr-WinlatorXR
 
+Thanks to Luboš, GmoLargey, and others for their work on [WinlatorXR](https://github.com/WinlatorXR/WinlatorXR) and everyone else who has contributed to portable PC gaming via Winlator on other platforms.
+
 Modified with the help of OpenCode DeepSeek V4.1 Flash
 
 ### Original README below:
@@ -45,8 +47,11 @@ loading a chapter freezes, turn PhysX off in the game's settings. This was also
 reported without the mod; the underlying cause remains unresolved.
 
 **Hold Y for one second to open VR settings.** Changes save automatically.
-Resolution defaults to **Auto**: launch once with the headset connected, then
-quit and relaunch so the recorded headset size takes effect.
+Resolution defaults to **1920x1080**, the WinlatorXR container desktop size this
+build expects. If your container runs a different size, set `Resolution` in
+`mevr.ini` to match it (or `auto`), and put the same numbers in `ResX`/`ResY` in
+`mevr-TdEngine.ini`: the mod offers the size as a display mode, and that is what
+the engine sizes its own render targets from.
 If gameplay stays flat after that, quit and relaunch once. The mod can load
 successfully while the game selects a resolution that prevents stereo; this is
 separate from injection failing. Keep the log if it repeats.
@@ -168,7 +173,7 @@ Start with the in-headset panel. The main options are:
 
 - **Hands and movement:** controller hand tracking, arm swing, guns, melee, and parkour.
 - **Comfort:** physical crouching, head-tilt balance, animation locks, and reticle visibility.
-- **Graphics and performance:** frame cap, resolution, lens flares, FPS display, and game UI size/height.
+- **Graphics and performance:** frame cap, resolution, lens flares, FPS display, game UI size/height, and a DRAW BUDGET measurement dial.
 - **Controllers and turning:** input source, turning mode, smooth speed, and snap angle.
 - **Calibration and menu:** recentering, left/right gun alignment, panel size/distance, and restore defaults.
 

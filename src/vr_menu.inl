@@ -26,7 +26,7 @@ enum MenuId {
     MFpsCap, MResolution, MFovPage, MLens, MFps, MRecenter, MGunPage, MSize, MDistance, MDefaults,
     MDebug, MLogging, MFast, MEx, MGunHand, MGunDown, MGunRight, MGunF, MGunR, MGunU,
     MController, MTurnMode, MTurnSpeed, MSnapAngle, MUiScale, MUiHeight,
-    MFovH, MFovV, MGameFov, MPageControls,
+    MFovH, MFovV, MGameFov, MPageControls, MDrawBudget,
     MBack, MDone, MConfirmReset, MPageHands, MPageComfort, MPageGraphics, MPageCalibration, MPageTrouble
 };
 struct MenuItem { MenuId id; const char* label; const char* help; };
@@ -69,6 +69,7 @@ static const MenuItem kMenuGraphics[] = {
 #if !MEVR_WINLATORXR
     {MResolution,"RESOLUTION","RESTART REQUIRED. AUTO USES YOUR HEADSET"},
 #endif
+    {MDrawBudget,"DRAW BUDGET","MEASUREMENT: SUBMIT FEWER WORLD DRAWS TO TEST THE DEVICE"},
     {MFovPage,"XR FOV","GAME, HMD HORIZONTAL AND HMD VERTICAL FOV"},
     {MLens,"LENS FLARES","RESTART REQUIRED"},
     {MFps,"FPS DISPLAY","SMALL HEADSET READOUT WITHOUT THE DEBUG OVERLAY"},
@@ -125,6 +126,13 @@ static const MenuItem* MenuItems(int* count) {
 #undef MENU_PAGE
 }
 static void MenuMessage(const char* message) { strcpy_s(g_menuStatus,message); }
+// Which rows respond to a sideways stick push. This was an inline list on the input path, which
+// silently ignored any new adjustable row that had not been added to it.
+static bool MenuAdjustable(MenuId id) {
+    return id<=MFps || id==MSize || id==MDistance || id==MDrawBudget ||
+           (id>=MDebug && id<=MGunU) || (id>=MController&&id<=MUiHeight) ||
+           id==MFovH || id==MFovV || id==MGameFov;
+}
 static bool MenuBlockedItem(MenuId id) {
     if(id==MArm || id==MGuns || id==MMelee || id==MParkour) return !g_motionHands||g_standardControllerActive;
     if(id==MCrouch) return !g_motionHands || !g_menuArm||g_standardControllerActive;
@@ -180,6 +188,26 @@ static bool VrMenuLoadSetting(const char* key,const char* val) {
         return false;
     }
     if(_stricmp(key,"ShowFPS")==0) { if(!SettingBool(val,&b))return false;g_menuFps=b;return true; }
+    if(_stricmp(key,"LayerTrace")==0) { if(!SettingBool(val,&b))return false;g_layerTrace=b;return true; }
+    if(_stricmp(key,"SkipNullDepthPass")==0) { if(!SettingBool(val,&b))return false;g_skipNullDepthPass=b;return true; }
+    if(_stricmp(key,"DetailMode")==0) {
+        // 0-3. The engine's own scale; 1 culls every actor above that detail level, so it is
+        // also the closest thing to a view-distance setting this game has.
+        if(MenuParseNumber(val,0.f,3.f,&v) && floorf(v)==v){g_detailMode=(int)v;return true;}
+        return false;
+    }
+    if(_stricmp(key,"DrawBudget")==0) {
+        // 1 = submit every world draw, N = one in N. The only dial that provably changes draw
+        // submission on this build, so it is how the device cost of draws gets measured.
+        if(MenuParseNumber(val,0.f,10.f,&v) && floorf(v)==v){g_temporalSplit=(int)v>1?(int)v:1;return true;}
+        return false;
+    }
+    if(_stricmp(key,"TemporalSplit")==0) {
+        // Older name for DrawBudget, kept so existing mevr.ini files still apply.
+        if(MenuParseNumber(val,0.f,10.f,&v) && floorf(v)==v){g_temporalSplit=(int)v;return true;}
+        return false;
+    }
+    if(_stricmp(key,"ProbeProps")==0) { if(!SettingBool(val,&b))return false;g_probeProps=b;return true; }
     for(int h=0;h<2;++h)for(int axis=0;axis<5;++axis) {
         static const char* suffix[]={"WristDownDegrees","WristRightDegrees","ForwardMm","RightMm","UpMm"};
         char name[64];sprintf_s(name,"Gun%s%s",h==0?"Left":"Right",suffix[axis]);
@@ -241,6 +269,7 @@ static bool SaveMenuSettings() {
     boolean("LockAnimPitch",!MenuAnimPreference(0));boolean("LockAnimRoll",!MenuAnimPreference(1));boolean("LockAnimYaw",!MenuAnimPreference(2));
     edits.push_back({"FrameCap",g_fpsCap==0?"unlimited":std::to_string((int)g_fpsCap)});
     edits.push_back({"Resolution",g_menuResolution});boolean("LensFlares",g_menuLens);boolean("D3D9Ex",g_menuEx);
+    edits.push_back({"DrawBudget",std::to_string(g_temporalSplit)});
     boolean("FastCapture",g_fastCapture);boolean("ShowFPS",g_menuFps);boolean("Debug",g_debug && g_overlay);
     boolean("MotionHandsDebug",g_motionHandsDebug);boolean("ArmSwingDebug",g_armSwingDebug);boolean("ParkourDebug",g_parkourDebug);
     number("MenuWidth",g_menuSize);number("MenuDistance",g_menuDistance);
@@ -374,6 +403,7 @@ static void MenuRestoreDefaults() {
     g_armSwingCrouch=g_balanceRoll=true;
     MenuAnimPreference(0)=MenuAnimPreference(1)=MenuAnimPreference(2)=true;
     g_fpsCap=60;g_menuResolution="1280x720";g_menuLens=false;g_menuEx=false;g_fastCapture=false;
+    g_temporalSplit=1;
     g_debug=false;g_overlay=true;g_motionHandsDebug=g_armSwingDebug=g_parkourDebug=false;
     g_menuSize=1.65f;g_menuDistance=1.5f;g_menuFps=false;
     g_controllerMode=0;g_snapTurning=false;g_smoothTurnSpeed=1;g_snapTurnAngle=45;
@@ -390,6 +420,9 @@ static void MenuRestoreDefaults() {
 static void MenuActivate(MenuId id,int delta) {
     const bool activate=delta==0;
     if(activate)delta=1;
+    if(g_debug && g_overlay)
+        Log("[menu] %s id=%d delta=%d page=%d row=%d",activate?"select":"adjust",
+            (int)id,delta,g_menuPage,g_menuRow);
     const auto choose=[&](bool current){return activate?!current:delta>0;};
     if(MenuBlockedItem(id)){MenuMessage("ENABLE THE REQUIRED FEATURE FIRST");return;}
     if(id>=MPageHands && id<=MPageTrouble){g_menuPage=1+(id-MPageHands);g_menuRow=0;return;}
@@ -444,6 +477,16 @@ static void MenuActivate(MenuId id,int delta) {
             *f=values[(index+delta+14)%14];break;
         }
         case MLens:g_menuLens=choose(g_menuLens);g_menuRestart=true;break;
+        case MDrawBudget: {
+            // Divisor, not a percentage: 1 submits every world draw, N submits one in N. The
+            // skipped draws rotate each frame, so geometry thins out instead of vanishing.
+            static const int values[]={1,2,3,4,10};int index=0;
+            for(int i=0;i<5;++i)if(g_temporalSplit==values[i])index=i;
+            g_temporalSplit=values[(index+delta+5)%5];
+            Log("[menu] draw budget 1/%d (%d%% of world draws)",g_temporalSplit,
+                100/g_temporalSplit);
+            break;
+        }
         case MEx:g_menuEx=choose(g_menuEx);g_menuRestart=true;break;
         case MFast:g_fastCapture=choose(g_fastCapture);break;
         case MDebug:g_debug=choose(g_debug&&g_overlay);g_overlay=g_debug;break;
@@ -481,6 +524,7 @@ static void MenuValue(MenuId id,char* out,size_t cap) {
         case MUiHeight:sprintf_s(out,cap,"%+.0f%%",g_gameUiHeight*100.);break;
         case MFpsCap:if(g_fpsCap==0)word=g_menuUnlimitedFailed?"UNAVAILABLE":"UNLIMITED";else sprintf_s(out,cap,"%.0f",(double)g_fpsCap);break;
         case MResolution:word=g_menuResolution.c_str();break;
+        case MDrawBudget:sprintf_s(out,cap,"%d%%",100/(g_temporalSplit>1?g_temporalSplit:1));break;
         case MHeadRoll:word=g_rollSign==1?"NORMAL":g_rollSign==-1?"INVERTED":"OFF";break;
         case MFovH:if(g_wxrFov<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_wxrFov);break;
         case MFovV:if(g_wxrFovV<=0.0f)word="AUTO";else sprintf_s(out,cap,"%.0f DEG",(double)g_wxrFovV);break;
@@ -520,13 +564,14 @@ static bool VrMenuInputTick(XrTime, bool focused,bool y,bool a,bool b,bool other
     if(g_menuOpen && !g_menuClosing) {
         int count=0;const auto* items=MenuItems(&count);
         if(events.back) {if(g_menuPage==0)MenuClose();else {g_menuPage=g_menuPage==6||g_menuPage==7?4:0;g_menuRow=0;}}
-        else if(events.row)g_menuRow=(g_menuRow+events.row+count)%count;
+        else if(events.row) {
+            g_menuRow=(g_menuRow+events.row+count)%count;
+            if(g_debug&&g_overlay)Log("[menu] row %d/%d",g_menuRow,count);
+        }
         else if(events.accept)MenuActivate(items[g_menuRow].id,0);
         else if(events.value) {
             const auto id=items[g_menuRow].id;
-            if(id<=MFps || id==MSize || id==MDistance || (id>=MDebug && id<=MGunU) ||
-               (id>=MController&&id<=MUiHeight) || id==MFovH || id==MFovV || id==MGameFov)
-                MenuActivate(id,events.value);
+            if(MenuAdjustable(id)) MenuActivate(id,events.value);
         }
     }
     if(g_menuPausePending || g_menuClosing) {

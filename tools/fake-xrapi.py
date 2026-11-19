@@ -55,6 +55,8 @@ def main():
     ap.add_argument('--hz', type=float, default=72.0)
     ap.add_argument('--seconds', type=float, default=300.0)
     ap.add_argument('--still', action='store_true', help='keep the head still')
+    ap.add_argument('--no-reset', action='store_true',
+                    help='do not delete version/vr: attach to a mod that is already running')
     ap.add_argument('--press', action='append', default=[], help='SECONDS:BUTTON, held for 0.5 s')
     args = ap.parse_args()
 
@@ -65,14 +67,18 @@ def main():
         presses.append((float(at), BUTTONS.index(name)))
 
     os.makedirs(args.dir, exist_ok=True)
-    for name in ('version', 'vr'):
-        try:
-            os.remove(os.path.join(args.dir, name))
-        except FileNotFoundError:
-            pass
+    if not args.no_reset:
+        for name in ('version', 'vr'):
+            try:
+                os.remove(os.path.join(args.dir, name))
+            except FileNotFoundError:
+                pass
     with open(os.path.join(args.dir, 'system'), 'w') as f:
         f.write('Meta\nQuest 3 (fake-xrapi)\n14\n2026-09-01\n%s\n' % args.screen)
-    print('wrote %s/system; waiting for the mod to write %s/version ...' % (args.dir, args.dir), flush=True)
+    if args.no_reset:
+        print('rewrote %s/system (no reset); the mod is already running' % args.dir, flush=True)
+    else:
+        print('wrote %s/system; waiting for the mod to write %s/version ...' % (args.dir, args.dir), flush=True)
 
     reply = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     reply.bind(('127.0.0.1', 7278))
@@ -105,13 +111,21 @@ def main():
                 if at <= t < at + 0.5:
                     buttons[index] = 'T'
             control = os.path.join(args.dir, 'press')
-            if os.path.exists(control):
-                names = open(control).read().split()
-                os.remove(control)
-                for n in names:
-                    name, _, hold = n.partition(':')
-                    if name in BUTTONS:
-                        queue.append((BUTTONS.index(name), float(hold) if hold else 0.3))
+            # The control file is shared with whoever is driving the run, so it can vanish or be
+            # mid-write between the exists() and the open(). Losing a press is recoverable; dying
+            # here takes the whole fake driver down and the game is then left with no frame source.
+            try:
+                if os.path.exists(control):
+                    with open(control) as f:
+                        names = f.read().split()
+                    os.remove(control)
+                    for n in names:
+                        name, _, hold = n.partition(':')
+                        if name in BUTTONS:
+                            queue.append((BUTTONS.index(name), float(hold) if hold else 0.3))
+            except OSError as e:
+                print('[press] control file busy/unreadable (%s) - skipped this poll' % e,
+                      flush=True)
             now = time.time()
             if queue and now >= held_until + 0.3:
                 current, hold = queue.pop(0)

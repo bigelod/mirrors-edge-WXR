@@ -47,6 +47,60 @@
 ; the frame cap, the capture and occlusion experiments - is off.
 Debug = off
 
+; Draw-stream layer census: per 900-frame window, how many draws went to each
+; bound target, split by whether c0 carried the scene matrix and by which entry
+; point issued them, plus the draw ordinal at which any depth-only clear
+; happened. That is the measurement the layered renderer (low-res world,
+; full-res HUD) is built on: it shows whether the first-person pass is a
+; separable run of draws before any pixel depends on the answer.
+; Log volume is one short table per window. Off by default.
+LayerTrace = off
+
+; Drop the depth-only pass that renders into a colourless (D3DFMT_NULL) square target every
+; frame - ~14 draws and ~30k primitives a frame, and the one pass the shadow keys do not
+; control. Its size follows MaxShadowResolution: 2048x2048 with the engine's own settings,
+; 512x512 with this profile's 512 (measured 2026-11-16). The target then keeps its clear value,
+; so nothing casts a shadow from this pass - the same trade the performance profile already
+; makes - instead of a corrupted frame. On by default; set it off to put the pass back.
+SkipNullDepthPass = on
+
+; DetailMode: the engine's own detail scale, 0-3. It decides which actors are eligible to draw
+; at all, so it looked like the closest thing this game has to a view-distance setting.
+;
+; 2 is what the game ships.
+; MEASURED 2026-11-16 on the PC, same level, same spawn, 900-frame windows:
+;
+;     DetailMode=2   520,143 world draws   197,264,810 primitives
+;     DetailMode=1   525,315 world draws   198,348,614 primitives
+;     DetailMode=0   525,375 world draws   198,325,874 primitives
+;
+; That is noise at every value, not a win. The engine did read it (it saved each value back to
+; its own config), 0 boots and renders normally, and the frame rate did not move. Mirror's Edge's
+; static meshes evidently sit at or below the threshold, so this key buys nothing here. Left
+; configurable because it is the engine's own setting and costs nothing, but do not expect
+; frames from it.
+DetailMode = 2
+
+; DrawBudget: submit only one world draw in N. 1 = every draw (normal), 2 = half, 10 = a tenth.
+;
+; This is a MEASUREMENT TOOL, not a feature - the picture will visibly lose geometry. It exists
+; because it is the only dial in this build that provably changes draw submission, so it is how
+; the cost of draws gets measured on a device we cannot profile directly:
+;
+;   hold Y (or click the right stick) -> GRAPHICS AND PERFORMANCE -> DRAW BUDGET -> then close it
+;   and play. Compare the frame rate at 100% and at 50% in the same spot.
+;
+;   No frame-rate change  -> draw submission is NOT the wall; leave this at 1.
+;   A real frame-rate gain -> draws are worth attacking at the source (the engine's frustum).
+;
+; The skipped draws rotate every frame, so geometry thins out rather than disappearing outright.
+; Also settable in the headset panel, and saved back here when changed there.
+DrawBudget = 1
+
+; ProbeProps = on logs every clip/distance/draw property the script classes expose, once, at frame
+; 600. Diagnostic only; this is how the script-side distance properties were found.
+ProbeProps = off
+
 ; Hide the previously captured camera-style glow/ring/starburst materials.
 ; Smoke, birds, atmospheric sun haze and bloom remain enabled. Restart to apply.
 LensFlares = off
@@ -494,7 +548,11 @@ FastCapture = off
 ; off also repairs TdEngine.ini on its own: the engine finds the size is not a real display
 ; mode any more, snaps to the nearest and writes that back. MaxMultisamples is NOT restored -
 ; that one is yours.
-Resolution = 1280x720
+;
+; 2026-11-16: the Quest container desktop moved to 1920x1080, so this follows it. At 1280x720
+; the picture was too soft to read; the cost is real (the device measured 19-28 fps at 720p in
+; a city level), so FrameCap is the first dial if this hurts more than it helps.
+Resolution = 1920x1080
 
 
 ; ---------------------------------------------------------------- the half-res hunt (diagnostics)
