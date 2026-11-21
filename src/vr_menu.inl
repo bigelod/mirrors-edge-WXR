@@ -67,6 +67,9 @@ static const MenuItem kMenuComfort[] = {
 static const MenuItem kMenuGraphics[] = {
     {MFpsCap,"FRAME CAP","UNLIMITED REMOVES ENGINE CAP; XR STILL PACES FRAMES"},
 #if !MEVR_WINLATORXR
+    // No resolution row on the headset: the container desktop decides the size and the launcher
+    // writes it before the engine starts, so a value chosen here would only be overwritten at the
+    // restart it needs to apply.
     {MResolution,"RESOLUTION","RESTART REQUIRED. AUTO USES YOUR HEADSET"},
 #endif
     {MDrawBudget,"DRAW BUDGET","MEASUREMENT: SUBMIT FEWER WORLD DRAWS TO TEST THE DEVICE"},
@@ -402,7 +405,7 @@ static void MenuRestoreDefaults() {
     g_motionHands=true;g_menuArm=false;g_menuGuns=g_menuMelee=g_menuParkour=true;
     g_armSwingCrouch=g_balanceRoll=true;
     MenuAnimPreference(0)=MenuAnimPreference(1)=MenuAnimPreference(2)=true;
-    g_fpsCap=60;g_menuResolution="1280x720";g_menuLens=false;g_menuEx=false;g_fastCapture=false;
+    g_fpsCap=60;g_menuResolution="auto";g_menuLens=false;g_menuEx=false;g_fastCapture=false;
     g_temporalSplit=1;
     g_debug=false;g_overlay=true;g_motionHandsDebug=g_armSwingDebug=g_parkourDebug=false;
     g_menuSize=1.65f;g_menuDistance=1.5f;g_menuFps=false;
@@ -466,9 +469,12 @@ static void MenuActivate(MenuId id,int delta) {
             g_fpsCap=next;break;
         }
         case MResolution: {
-            static const char* values[]={"off","auto","1920x1080","2560x1440","3200x1800","3840x2160","4224x2376"};
-            int index=0;for(int i=0;i<7;++i)if(g_menuResolution==values[i])index=i;
-            g_menuResolution=values[(index+delta+7)%7];g_menuRestart=true;break;
+            // 720p and 900p are the fill-rate experiment: the engine renders fewer pixels and the
+            // container desktop follows, so WinlatorXR captures (and the headset shows) a smaller
+            // image upscaled. AUTO keeps whatever the container already is.
+            static const char* values[]={"off","auto","1280x720","1600x900","1920x1080","2560x1440","3200x1800","3840x2160"};
+            int index=0;for(int i=0;i<8;++i)if(g_menuResolution==values[i])index=i;
+            g_menuResolution=values[(index+delta+8)%8];g_menuRestart=true;break;
         }
         case MFovH: case MFovV: case MGameFov: {
             float* f=id==MFovH?&g_wxrFov:id==MFovV?&g_wxrFovV:&g_gameFov;
@@ -647,9 +653,14 @@ static void MenuRasterize(int count,const MenuItem* items,const char values[][64
                 "FIELD OF VIEW"};
             MenuText(MenuPx(40),MenuPx(40),titles[g_menuPage],10,green);
             MenuRect(MenuPx(40),MenuPx(98),MenuPx(1120),MenuPx(3),green);
+            // Rows fit 76 px apart up to eight entries. The graphics page now carries nine
+            // (frame cap, resolution, draw budget...), so tighten the pitch rather than let the
+            // last row collide with the help line.
+            const int rowStep = count > 8 ? 62 : 76;
+            const int rowBox  = count > 8 ? 56 : 68;
             for(int i=0;i<count;++i) {
-                const int y=MenuPx(140+i*76);const bool selected=i==g_menuRow;
-                if(selected)MenuRect(MenuPx(28),y-MenuPx(16),MenuPx(1144),MenuPx(68),green);
+                const int y=MenuPx(140+i*rowStep);const bool selected=i==g_menuRow;
+                if(selected)MenuRect(MenuPx(28),y-MenuPx(16),MenuPx(1144),MenuPx(rowBox),green);
                 const uint32_t ink=selected?black:MenuBlockedItem(items[i].id)?dim:green;
                 MenuText(MenuPx(48),y,items[i].label,8,ink);
                 MenuText(MenuPx(1144)-(int)strlen(values[i])*48,y,values[i],8,ink);

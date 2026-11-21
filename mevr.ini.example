@@ -505,7 +505,11 @@ FastCapture = off
 ; forces the game windowed, so the oversized frame is just a surface that Present shrinks into
 ; the window. The headset is fed from that surface BEFORE the shrink, at full size.
 ;
-; Resolution = auto follows whatever headset is attached and needs nothing else set. It also
+; On the headset the CONTAINER DESKTOP decides the size. The launcher reads it before the engine
+; starts and writes it here and into TdEngine.ini, so a 720p container renders at 720p with
+; nothing else to set - change the size in WinlatorXR, not here. An explicit WxH is still honoured
+; when the mod is started without the launcher, and ``auto`` asks for the container size directly.
+;; Resolution = auto follows whatever headset is attached and needs nothing else set. It also
 ; keeps ResX / ResY in TdEngine.ini in step for you, which is the half people miss.
 ;
 ; ⚠️ auto always lands ONE LAUNCH LATE, by construction. The engine fixes its render size
@@ -552,7 +556,7 @@ FastCapture = off
 ; 2026-11-16: the Quest container desktop moved to 1920x1080, so this follows it. At 1280x720
 ; the picture was too soft to read; the cost is real (the device measured 19-28 fps at 720p in
 ; a city level), so FrameCap is the first dial if this hurts more than it helps.
-Resolution = 1920x1080
+Resolution = auto
 
 
 ; ---------------------------------------------------------------- the half-res hunt (diagnostics)

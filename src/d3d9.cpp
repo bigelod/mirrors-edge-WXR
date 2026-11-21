@@ -9782,14 +9782,33 @@ static void AdoptLocatedViews(XrTime displayTime)
                 g_targetHalfFovY = atanf(tanf(g_targetHalfFovX) / aspect);
             else if (explicitV && !explicitH)
                 g_targetHalfFovX = atanf(tanf(g_targetHalfFovY) * aspect);
+            else if (!explicitH && !explicitV && aspect > 0.01f) {
+                // ---- both auto: the picture's aspect, not the eye's, decides the pair ----
+                //
+                // A per-eye frustum is nearly square (~1.05); the picture on screen is 16:9.
+                // Taking BOTH axes from the headset therefore describes a 1.05 frustum for a
+                // 1.78 image - a 1.6x horizontal squeeze, which is the "too wide or too tall"
+                // stretching, and it swings with every head turn because the layer is a flat
+                // screen. Anchor the horizontal (WinlatorXR cannot show more than its native
+                // width, so exceeding it gets squeezed instead) and derive the vertical from
+                // what is actually being rendered.
+                g_targetHalfFovY = atanf(tanf(g_targetHalfFovX) / aspect);
+            }
             {
                 static float loggedH = -1.0f, loggedV = -1.0f;
                 if (loggedH != g_wxrFov || loggedV != g_wxrFovV) {
                     loggedH = g_wxrFov; loggedV = g_wxrFovV;
-                    Log("[fov] HMD H %.0f%s, HMD V %.0f%s -> targeting %.1f x %.1f",
-                        g_wxrFov, explicitH ? "" : " (auto)",
+                    // Say whether the frustum matches the picture. tan(x)/tan(y) must equal the
+                    // image aspect; anything else is a stretch, whatever the angles look like.
+                    const float tanRatio = tanf(g_targetHalfFovX) / tanf(g_targetHalfFovY);
+                    const float err = tanRatio / (aspect > 0.01f ? aspect : 1.0f);
+                    Log("[fov] HMD H %.0f%s, HMD V %.0f%s -> targeting %.1f x %.1f"
+                        " (tan ratio %.3f vs image %.3f, %s)", g_wxrFov, explicitH ? "" : " (auto)",
                         g_wxrFovV, explicitV ? "" : " (auto)",
-                        g_targetHalfFovX * 114.5916f, g_targetHalfFovY * 114.5916f);
+                        g_targetHalfFovX * 114.5916f, g_targetHalfFovY * 114.5916f,
+                        tanRatio, aspect,
+                        (err > 0.97f && err < 1.03f) ? "square pixels"
+                                                     : "*** STRETCHED - aspect mismatch");
                 }
             }
 #endif
@@ -12292,8 +12311,13 @@ static double g_armPhaseMs[13] = {};
 static long g_armPhaseCalls = 0;
 struct ArmPhaseTimer {
     LARGE_INTEGER last;
-    ArmPhaseTimer() { QueryPerformanceCounter(&last); }
+    // The phase breakdown costs two timing calls per mark - twenty-six a frame - which is real
+    // money under Box64. It is a debugging tool, so it follows MotionHandsDebug and costs one
+    // branch when that is off.
+    bool on;
+    ArmPhaseTimer() : on(g_motionHandsDebug) { if (on) QueryPerformanceCounter(&last); }
     void Mark(int phase) {
+        if (!on) return;
         LARGE_INTEGER now, f;
         QueryPerformanceCounter(&now);
         QueryPerformanceFrequency(&f);
@@ -12301,6 +12325,7 @@ struct ArmPhaseTimer {
         last = now;
     }
     ~ArmPhaseTimer() {
+        if (!on) return;
         if (++g_armPhaseCalls < 600) return;
         char line[900]; int at = 0;
         for (int i = 0; i < 13; ++i)

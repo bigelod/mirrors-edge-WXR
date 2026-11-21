@@ -76,24 +76,6 @@ static bool ReadAll(const wchar_t* path, std::string& out)
     return ok;
 }
 
-static bool ReadAll(const wchar_t* path, std::string& out)
-{
-    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(h, &size) || size.QuadPart < 0 || size.QuadPart > 4 * 1024 * 1024) {
-        CloseHandle(h);
-        return false;
-    }
-    out.assign((size_t)size.QuadPart, '\0');
-    DWORD got = 0;
-    const bool ok = out.empty() ||
-        (ReadFile(h, &out[0], (DWORD)out.size(), &got, nullptr) && got == out.size());
-    CloseHandle(h);
-    return ok;
-}
-
 static bool ReadResolution(unsigned* w, unsigned* h);   // defined below the desktop probe
 
 static bool WriteAll(const wchar_t* path, const std::string& data)
@@ -237,8 +219,8 @@ static void ApplyContainerResolution()
         return;
     }
     if (SetIniResolution(ini, w, h)) {
-        if (had) Log("mevr.ini Resolution %ux%u -> %ux%u (container screen)", oldW, oldH, w, h);
-        else     Log("mevr.ini Resolution = %ux%u (container screen)", w, h);
+        if (had) Log("mevr.ini Resolution %ux%u -> %ux%u (the container desktop wins)", oldW, oldH, w, h);
+        else     Log("mevr.ini Resolution = %ux%u (from the container desktop)", w, h);
     }
 
     // The engine renders 16:9 and letterboxes the rest; say so rather than let it surprise.

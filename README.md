@@ -47,11 +47,13 @@ loading a chapter freezes, turn PhysX off in the game's settings. This was also
 reported without the mod; the underlying cause remains unresolved.
 
 **Hold Y for one second to open VR settings.** Changes save automatically.
-Resolution defaults to **1920x1080**, the WinlatorXR container desktop size this
-build expects. If your container runs a different size, set `Resolution` in
-`mevr.ini` to match it (or `auto`), and put the same numbers in `ResX`/`ResY` in
-`mevr-TdEngine.ini`: the mod offers the size as a display mode, and that is what
-the engine sizes its own render targets from.
+
+Resolution follows the **WinlatorXR container desktop**. `mevr-launcher.exe` reads it
+before the engine starts and writes it into `mevr.ini` and into the engine's
+`TdEngine.ini` (`ResX`/`ResY`), so a 720p container renders at 720p with nothing to
+configure - change the size in WinlatorXR, not in the mod. Without a readable
+container size the mod falls back to `Resolution = auto`; an explicit `WxH` in
+`mevr.ini` is honoured when the launcher is not used.
 If gameplay stays flat after that, quit and relaunch once. The mod can load
 successfully while the game selects a resolution that prevents stereo; this is
 separate from injection failing. Keep the log if it repeats.

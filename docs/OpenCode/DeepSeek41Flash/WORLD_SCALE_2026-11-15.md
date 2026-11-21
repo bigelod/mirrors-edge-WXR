@@ -554,7 +554,119 @@ engine has already walked its draw list by then, so it does not remove whatever 
 the game's own submission loop. A null result therefore does not fully exonerate the draw path; a
 positive result definitely incriminates the D3D9/DXVK side.
 
+## Device session 2026-11-20 - draws are not the wall; the frame is fixed-cost
+
+Log: `E:\tmp\VRLogs\MirrorsEdge\mevr-20261020.log`, build `87BCEFE6`, 1080p, 15,000 frames.
+
+**Draw budget, in the headset.** The panel was driven for real: 1/2, 1/3, 1/4, 1/10, back to 1/1.
+Where a window sat on one setting long enough to read:
+
+| Budget | Frame rate |
+| --- | --- |
+| 1/1 (100%) | 44.2, 44.6, 46.9, 47.1 |
+| 1/10 (10%) | **45.4** |
+
+Cutting nine tenths of the world draws changed nothing. Combined with the same result on the PC,
+draw submission is not the limit on either machine, and the whole frustum/LOD line of work is
+correctly closed (Tests 9-19). It also rules out our per-draw hook as a significant cost, since
+90% of the calls (and their hook work) disappeared.
+
+**What the device says about our own cost.** From the mod's own timers in the same log:
+
+```
+[perf] arm update over 600 calls: mod mean/max 0.88/14.62 ms, game mean 0.06 ms
+[perf] arm phases ...: wrist rotations 0.31, detached shoulders 0.23, restore overrides 0.15,
+        hand position IK 0.12, combat tick 0.12, game Update1pArms 0.07, pose read 0.03
+[perf] memory reads: 4632-5584 per frame (page-checked direct), 0 faulted
+```
+
+So the mod costs ~1 ms a frame on the device - 3% at 30 fps - but with **10-15 ms spikes**, which
+are worth fixing separately: a spike that long is half a frame. The read count (5,000 a frame) is
+the obvious place that cost comes from.
+
+**fp16 render targets: dead end.** `FloatingPointRenderTargets=False` is accepted by the engine
+(the key survives a rewrite) but the scene targets stay `fmt 113` at 1920x1080, so the config flag
+does not reach RT creation in this build. The device creates four to five 1080p fp16 targets.
+
+**Resolution is now a real dial.** `Resolution = 1280x720` was verified end to end on the PC
+(`scene 1280x720 frame 1280x720`, renders, presents, 49-50 fps) and the row is now in the headset
+panel for the WXR build as well (it was PC-only). This is the experiment that decides whether the
+device is fill-bound: if 720p is a large win, the engine is pixel-limited and a render-scale path
+with an upscale is the feature to build; if it is not, the cost is the engine's own frame and no
+amount of dial-turning in this mod will move it.
+
+## Resolution belongs to the container, and now always follows it
+
+A 720p container is the cleanest fill-rate experiment, but the size cannot be changed from inside
+it. So the mod must ask the container, not the other way round.
+
+`Resolution` now defaults to **auto** in both the shipped ini and the in-DLL defaults, and the
+launcher resolves it before anything starts: `SCREEN_WIDTH`/`SCREEN_HEIGHT` if WinlatorXR exports
+them, else `EnumDisplaySettings(ENUM_CURRENT_SETTINGS)`, else `GetSystemMetrics`. It then rewrites
+`mevr.ini` **and** the engine's `TdEngine.ini` (`ResX`/`ResY` in
+`%USERPROFILE%\Documents\EA Games\Mirror's Edge\TdGame\Config`), which is the copy the engine
+actually reads.
+
+Verified by simulating a 720p container with the environment variables:
+
+```
+desktop from SCREEN_WIDTH/HEIGHT: 1280x720
+mevr.ini Resolution = 1280x720 (from the container desktop)
+TdEngine.ini updated (41269 bytes) -> ...\Documents\EA Games\Mirror's Edge\TdGame\Config\TdEngine.ini
+[cfg]   Resolution = 1280x720   [requested] 1280x720
+ResX=1280  ResY=720
+```
+
+The panel's RESOLUTION row was removed from the headset build again: applying it needs a restart,
+and the restart goes through the launcher, which would overwrite it with the container size. A
+control that can never take effect is worse than no control. PC builds keep the row.
+
+Also fixed: the launcher did not compile at all (a duplicate `ReadAll` from an earlier edit), so
+the shipped `mevr-launcher.exe` was stale. It builds now and reports the container detection in its
+log.
+
+## FOV: the screen's aspect has to decide the frustum, not the eye's
+
+Symptom: "too wide or too tall", and the picture swims as the head turns.
+
+The device log had the numbers:
+
+```
+[fov] headset wants 103.4 deg vertical; targeting 108.9 x 103.4 at 1.78 aspect
+```
+
+`tan(108.9/2) / tan(103.4/2) = 1.105`, but the picture is 1920x1080 = **1.778**. A rectangular
+image cannot be described by a frustum whose tangents ratio differs from its aspect without a
+stretch: 1.778/1.105 = **1.61x horizontally**, or equivalently everything 1.35x too tall. The mono
+layer is a flat screen, so that stretch rotates with the head - which is why it is only obvious
+when looking around.
+
+Cause: with both FOV values on auto, the WinlatorXR path took **both axes from the headset's
+per-eye frustum**. A per-eye frustum is nearly square (~1.05); the picture is not.
+
+Fix: keep the horizontal anchored (WinlatorXR clamps to its native width, so exceeding it gets
+squeezed - the 132-degree alternate-eye failure), and derive the vertical from the aspect of what
+is actually rendered. Auto now logs the invariant:
+
+```
+[fov] HMD H 0 (auto), HMD V 0 (auto) -> targeting 108.9 x 76.4
+      (tan ratio 1.778 vs image 1.778, square pixels)
+```
+
+Explicit HMD H / HMD V still win, and setting one alone derives the other, but the log now says
+`*** STRETCHED - aspect mismatch` when the pair cannot describe the picture, so a deliberate
+experiment is distinguishable from a bug.
+
+**The shape limit is real, and it is the remaining lever.** At a 16:9 container, anchoring 108.9
+horizontal leaves 76.4 vertical out of the eye's ~103 - the rest is unused view, not distortion.
+A container whose aspect is close to the per-eye aspect (~1.05) fills the view on both axes with no
+stretch at all, because then the derived vertical lands on the headset's own value. That makes the
+container resolution a *geometry* control, not only a performance one.
+
 ## State left behind
+
+
+
 
 
 
